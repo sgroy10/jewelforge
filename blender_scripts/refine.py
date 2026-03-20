@@ -191,7 +191,10 @@ def apply_gold_material(obj):
         bsdf.inputs["Base Color"].default_value = (0.831, 0.686, 0.216, 1.0)  # #D4AF37
         bsdf.inputs["Metallic"].default_value = 0.95
         bsdf.inputs["Roughness"].default_value = 0.25
-        bsdf.inputs["Specular IOR Level"].default_value = 0.8
+        try:
+            bsdf.inputs["Specular IOR Level"].default_value = 0.8
+        except KeyError:
+            bsdf.inputs["Specular"].default_value = 0.8
 
     if obj.data.materials:
         obj.data.materials[0] = mat

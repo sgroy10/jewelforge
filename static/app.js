@@ -174,11 +174,19 @@ async function startPipeline() {
         setStep('refine', 'done', 'Production-ready STL generated');
 
         // Store results
-        currentSTLB64 = refineData.stl_base64;
-        currentGLBB64 = refineData.glb_base64;
+        currentSTLB64 = refineData.stl_base64 || null;
+        currentGLBB64 = refineData.glb_base64 || null;
 
         // Show 3D viewer
         showViewer(refineData);
+
+        // Update download button text
+        const dlBtn = document.getElementById('btnDownload');
+        if (currentSTLB64) {
+            dlBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download STL';
+        } else {
+            dlBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download GLB';
+        }
 
     } catch (error) {
         console.error('Pipeline error:', error);
@@ -253,11 +261,17 @@ function showViewer(data) {
     // Init Three.js
     initViewer();
 
-    // Load the STL or GLB
+    // Load the model — prefer STL (refined) but fall back to GLB (raw)
     if (data.stl_base64) {
         loadSTL(data.stl_base64);
     } else if (data.glb_base64) {
         loadGLB(data.glb_base64);
+    }
+
+    // Show refined status
+    if (data.refined === false) {
+        const overlay = document.getElementById('viewerOverlay');
+        overlay.innerHTML = '<p>Raw AI mesh (Blender refinement pending) · Drag to rotate · Scroll to zoom</p>';
     }
 
     // Scroll to viewer
@@ -444,18 +458,21 @@ function resetCamera() {
 
 // ─── Download STL ───────────────────────────────
 function downloadSTL() {
-    if (!currentSTLB64) {
-        alert('No STL available yet. Generate a 3D model first.');
+    const data = currentSTLB64 || currentGLBB64;
+    const ext = currentSTLB64 ? 'stl' : 'glb';
+    if (!data) {
+        alert('No model available yet. Generate a 3D model first.');
         return;
     }
-    const bytes = atob(currentSTLB64);
+    const bytes = atob(data);
     const buffer = new Uint8Array(bytes.length);
     for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
-    const blob = new Blob([buffer], { type: 'application/octet-stream' });
+    const mime = ext === 'stl' ? 'application/octet-stream' : 'model/gltf-binary';
+    const blob = new Blob([buffer], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `jewelforge_${Date.now()}.stl`;
+    a.download = `jewelforge_${Date.now()}.${ext}`;
     a.click();
     URL.revokeObjectURL(url);
 }

@@ -296,8 +296,29 @@ async def gemini_generate_wax_views(image_bytes: bytes, analysis: dict) -> list[
 # ──────────────────────────────────────────────
 # Blender Headless Processing
 # ──────────────────────────────────────────────
+BLENDER_AVAILABLE = False
+
+def check_blender():
+    """Check if Blender is available at startup."""
+    global BLENDER_AVAILABLE
+    try:
+        r = subprocess.run(["blender", "--version"], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            BLENDER_AVAILABLE = True
+            print(f"JewelForge: Blender found — {r.stdout.strip().split(chr(10))[0]}")
+        else:
+            print(f"JewelForge: Blender not working — {r.stderr[:200]}")
+    except Exception as e:
+        print(f"JewelForge: Blender not available — {e}")
+
+check_blender()
+
+
 def run_blender_refine(input_glb: str, output_stl: str, output_glb: str) -> dict:
     """Run Blender headless mesh refinement."""
+    if not BLENDER_AVAILABLE:
+        raise Exception("Blender not available")
+
     script_path = Path(__file__).parent / "blender_scripts" / "refine.py"
     result = subprocess.run(
         [
@@ -327,16 +348,18 @@ def run_blender_refine(input_glb: str, output_stl: str, output_glb: str) -> dict
 
 @app.get("/api/health")
 async def health():
-    blender_version = "unknown"
-    try:
-        r = subprocess.run(["blender", "--version"], capture_output=True, text=True, timeout=10)
-        blender_version = r.stdout.strip().split("\n")[0]
-    except Exception:
-        pass
+    blender_version = "not available"
+    if BLENDER_AVAILABLE:
+        try:
+            r = subprocess.run(["blender", "--version"], capture_output=True, text=True, timeout=10)
+            blender_version = r.stdout.strip().split("\n")[0]
+        except Exception:
+            pass
     return {
         "status": "ok",
         "version": "1.0.0",
         "blender": blender_version,
+        "blender_available": BLENDER_AVAILABLE,
         "engines": ["hitem3d", "rodin"],
     }
 
@@ -489,7 +512,7 @@ async def full_pipeline(
     if not mesh_result:
         raise HTTPException(status_code=500, detail="All 3D engines failed")
 
-    # Step 5: Download and refine with Blender
+    # Step 5: Download and optionally refine with Blender
     job_id = str(uuid.uuid4())[:8]
     input_glb = str(TEMP_DIR / f"{job_id}_input.glb")
     output_stl = str(TEMP_DIR / f"{job_id}_output.stl")
@@ -501,7 +524,17 @@ async def full_pipeline(
             with open(input_glb, "wb") as f:
                 f.write(resp.content)
 
-        stats = run_blender_refine(input_glb, output_stl, output_glb)
+        raw_glb_bytes = resp.content
+
+        # Try Blender refinement
+        stats = {}
+        refined = False
+        if BLENDER_AVAILABLE:
+            try:
+                stats = run_blender_refine(input_glb, output_stl, output_glb)
+                refined = True
+            except Exception as e:
+                print(f"Blender refinement failed, serving raw: {e}")
 
         result = {
             "success": True,
@@ -509,15 +542,19 @@ async def full_pipeline(
             "analysis": analysis,
             "wax_views": wax_b64,
             "engine": mesh_result.get("engine", "unknown"),
+            "refined": refined,
             "stats": stats,
         }
 
-        if os.path.exists(output_stl):
+        if refined and os.path.exists(output_stl):
             with open(output_stl, "rb") as f:
                 result["stl_base64"] = base64.b64encode(f.read()).decode()
-        if os.path.exists(output_glb):
+        if refined and os.path.exists(output_glb):
             with open(output_glb, "rb") as f:
                 result["glb_base64"] = base64.b64encode(f.read()).decode()
+        else:
+            # Serve raw GLB directly
+            result["glb_base64"] = base64.b64encode(raw_glb_bytes).decode()
 
         return result
 
