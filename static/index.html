@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JewelForge — AI Jewelry to Production-Ready 3D</title>
+    <meta name="description" content="Transform jewelry photos and prompts into production-ready 3D printable STL files. AI-powered design to manufacturing.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+    <!-- Three.js for STL/GLB viewer -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-inner">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                        <path d="M14 2L2 8v12l12 6 12-6V8L14 2z" stroke="url(#g1)" stroke-width="1.5" fill="none"/>
+                        <path d="M14 8l-6 3v6l6 3 6-3v-6l-6-3z" fill="url(#g1)" opacity="0.3"/>
+                        <path d="M14 8v10M8 11l6 3 6-3" stroke="url(#g1)" stroke-width="1" opacity="0.6"/>
+                        <defs>
+                            <linearGradient id="g1" x1="0" y1="0" x2="28" y2="28">
+                                <stop offset="0%" stop-color="#D4AF37"/>
+                                <stop offset="100%" stop-color="#F4D03F"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </div>
+                <span class="logo-text">JewelForge</span>
+            </div>
+            <nav class="nav-links">
+                <span class="nav-badge">AI-Powered</span>
+                <span class="nav-badge">Production-Ready STL</span>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="hero">
+        <div class="hero-glow"></div>
+        <h1 class="hero-title">
+            <span class="hero-line1">Jewelry Photo to</span>
+            <span class="hero-line2">Production-Ready 3D</span>
+        </h1>
+        <p class="hero-sub">Upload a photo or describe your design. Get a clean, watertight, 3D-printable STL in minutes.</p>
+    </section>
+
+    <!-- Main App -->
+    <main class="app-container">
+        <!-- Input Section -->
+        <div class="input-section">
+            <!-- Tab Switcher -->
+            <div class="tab-bar">
+                <button class="tab active" data-tab="upload" onclick="switchTab('upload')">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                    </svg>
+                    Upload Photo
+                </button>
+                <button class="tab" data-tab="prompt" onclick="switchTab('prompt')">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 20h9M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                    </svg>
+                    Describe Design
+                </button>
+            </div>
+
+            <!-- Upload Panel -->
+            <div class="tab-panel active" id="panel-upload">
+                <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                    <input type="file" id="fileInput" accept="image/*" hidden>
+                    <div class="upload-icon">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#D4AF37" stroke-width="1.5">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                    </div>
+                    <p class="upload-text">Drop jewelry photo here or click to browse</p>
+                    <p class="upload-hint">PNG, JPG up to 20MB — Works best with clean product photos</p>
+                </div>
+                <div class="preview-image" id="uploadPreview" style="display:none">
+                    <img id="previewImg" alt="Uploaded jewelry">
+                    <button class="btn-clear" onclick="clearUpload()">✕</button>
+                </div>
+            </div>
+
+            <!-- Prompt Panel -->
+            <div class="tab-panel" id="panel-prompt">
+                <div class="prompt-box">
+                    <textarea id="promptInput" placeholder="Describe your jewelry design...&#10;&#10;Example: A classic 6-prong solitaire ring with a round brilliant diamond, thin knife-edge band, in 18K yellow gold" rows="5"></textarea>
+                    <div class="prompt-suggestions">
+                        <button class="suggestion" onclick="fillPrompt('Elegant solitaire engagement ring with 4-prong setting, round stone, platinum band')">Solitaire Ring</button>
+                        <button class="suggestion" onclick="fillPrompt('Intricate motif ring with floral vine pattern, rose gold, organic sculptural design')">Motif Ring</button>
+                        <button class="suggestion" onclick="fillPrompt('Classic diamond stud earrings, round brilliant, 4-prong basket setting, white gold')">Stud Earrings</button>
+                        <button class="suggestion" onclick="fillPrompt('Art deco pendant with geometric patterns, emerald-cut center stone, milgrain details')">Art Deco Pendant</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Generate Button -->
+            <button class="btn-generate" id="btnGenerate" onclick="startPipeline()">
+                <span class="btn-text">Generate 3D Model</span>
+                <span class="btn-icon">→</span>
+            </button>
+        </div>
+
+        <!-- Pipeline Status -->
+        <div class="pipeline-section" id="pipelineSection" style="display:none">
+            <h3 class="section-title">Processing Pipeline</h3>
+            <div class="pipeline-steps">
+                <div class="step" id="step-analyze">
+                    <div class="step-indicator"><div class="step-dot"></div></div>
+                    <div class="step-info">
+                        <span class="step-label">Analyzing Design</span>
+                        <span class="step-detail" id="step-analyze-detail"></span>
+                    </div>
+                </div>
+                <div class="step" id="step-wax">
+                    <div class="step-indicator"><div class="step-dot"></div></div>
+                    <div class="step-info">
+                        <span class="step-label">Generating Wax Views</span>
+                        <span class="step-detail" id="step-wax-detail"></span>
+                    </div>
+                </div>
+                <div class="step" id="step-3d">
+                    <div class="step-indicator"><div class="step-dot"></div></div>
+                    <div class="step-info">
+                        <span class="step-label">Building 3D Mesh</span>
+                        <span class="step-detail" id="step-3d-detail"></span>
+                    </div>
+                </div>
+                <div class="step" id="step-refine">
+                    <div class="step-indicator"><div class="step-dot"></div></div>
+                    <div class="step-info">
+                        <span class="step-label">Refining & Exporting STL</span>
+                        <span class="step-detail" id="step-refine-detail"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Wax Views Preview -->
+            <div class="wax-preview" id="waxPreview" style="display:none">
+                <h4>Wax Reference Views</h4>
+                <div class="wax-grid" id="waxGrid"></div>
+            </div>
+        </div>
+
+        <!-- 3D Viewer Section -->
+        <div class="viewer-section" id="viewerSection" style="display:none">
+            <div class="viewer-header">
+                <h3 class="section-title">3D Preview</h3>
+                <div class="viewer-controls">
+                    <button class="viewer-btn" onclick="toggleAutoRotate()" id="btnRotate" title="Toggle Auto-Rotation">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0118.8-4.3M22 12.5a10 10 0 01-18.8 4.3"/>
+                        </svg>
+                    </button>
+                    <button class="viewer-btn" onclick="toggleWireframe()" title="Toggle Wireframe">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
+                            <line x1="3" y1="12" x2="21" y2="12"/>
+                            <line x1="12" y1="3" x2="12" y2="21"/>
+                        </svg>
+                    </button>
+                    <button class="viewer-btn" onclick="resetCamera()" title="Reset View">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                        </svg>
+                    </button>
+                    <button class="btn-download" onclick="downloadSTL()" id="btnDownload">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+                        </svg>
+                        Download STL
+                    </button>
+                </div>
+            </div>
+            <div class="viewer-canvas-wrap">
+                <canvas id="viewer3d"></canvas>
+                <div class="viewer-overlay" id="viewerOverlay">
+                    <p>Drag to rotate · Scroll to zoom · Right-click to pan</p>
+                </div>
+            </div>
+            <!-- Mesh Stats -->
+            <div class="mesh-stats" id="meshStats" style="display:none">
+                <div class="stat">
+                    <span class="stat-label">Vertices</span>
+                    <span class="stat-value" id="statVerts">—</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Faces</span>
+                    <span class="stat-value" id="statFaces">—</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Watertight</span>
+                    <span class="stat-value" id="statWater">—</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Manifold</span>
+                    <span class="stat-value" id="statManifold">—</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Size (mm)</span>
+                    <span class="stat-value" id="statSize">—</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Engine</span>
+                    <span class="stat-value" id="statEngine">—</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Analysis Card -->
+        <div class="analysis-card" id="analysisCard" style="display:none">
+            <h4>Design Analysis</h4>
+            <div id="analysisContent"></div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>JewelForge — AI-Powered Jewelry Manufacturing Pipeline</p>
+    </footer>
+
+    <script src="/app.js"></script>
+</body>
+</html>
