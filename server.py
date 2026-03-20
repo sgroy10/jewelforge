@@ -169,7 +169,7 @@ async def gemini_generate_image(prompt: str) -> bytes:
     """Generate a jewelry image from text prompt using Gemini."""
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={GEMINI_API_KEY}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={GEMINI_API_KEY}",
             json={
                 "contents": [
                     {
@@ -189,12 +189,14 @@ async def gemini_generate_image(prompt: str) -> bytes:
             },
         )
         data = resp.json()
+        if "error" in data:
+            raise Exception(f"Gemini error: {data['error'].get('message', data['error'])}")
         # Extract image from response
         for candidate in data.get("candidates", []):
             for part in candidate.get("content", {}).get("parts", []):
                 if "inlineData" in part:
                     return base64.b64decode(part["inlineData"]["data"])
-        raise Exception("Gemini did not return an image")
+        raise Exception(f"Gemini did not return an image. Response keys: {list(data.keys())}")
 
 
 async def gemini_analyze_jewelry(image_bytes: bytes) -> dict:
@@ -202,7 +204,7 @@ async def gemini_analyze_jewelry(image_bytes: bytes) -> dict:
     b64 = base64.b64encode(image_bytes).decode()
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={GEMINI_API_KEY}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
             json={
                 "contents": [
                     {
@@ -253,7 +255,7 @@ async def gemini_generate_wax_views(image_bytes: bytes, analysis: dict) -> list[
     async with httpx.AsyncClient(timeout=120) as client:
         for angle in view_angles:
             resp = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={GEMINI_API_KEY}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={GEMINI_API_KEY}",
                 json={
                     "contents": [
                         {
