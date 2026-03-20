@@ -1,17 +1,23 @@
 /* ═══════════════════════════════════════════════
-   JewelForge — Frontend Application
+   JewelForge — Frontend Application (ES Module)
    ═══════════════════════════════════════════════ */
 
-// State
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// ─── State ──────────────────────────────────────
 let currentImageB64 = null;
 let currentSTLB64 = null;
 let currentGLBB64 = null;
 let currentAnalysis = null;
 
-// Three.js globals
+// Three.js
 let scene, camera, renderer, controls, currentMesh;
 let autoRotate = true;
 let wireframeMode = false;
+let animFrameId = null;
 
 // ─── Tab Switching ──────────────────────────────
 function switchTab(tab) {
@@ -29,18 +35,14 @@ function fillPrompt(text) {
 const fileInput = document.getElementById('fileInput');
 const dropZone = document.getElementById('dropZone');
 
+dropZone.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', (e) => {
     if (e.target.files[0]) handleFile(e.target.files[0]);
 });
-
-dropZone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropZone.classList.add('dragover');
-});
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
 dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
+    e.preventDefault(); dropZone.classList.remove('dragover');
     if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
 });
 
@@ -48,8 +50,7 @@ function handleFile(file) {
     if (!file.type.startsWith('image/')) return;
     const reader = new FileReader();
     reader.onload = (e) => {
-        const b64 = e.target.result.split(',')[1];
-        currentImageB64 = b64;
+        currentImageB64 = e.target.result.split(',')[1];
         document.getElementById('previewImg').src = e.target.result;
         document.getElementById('uploadPreview').style.display = 'block';
         dropZone.style.display = 'none';
@@ -64,7 +65,7 @@ function clearUpload() {
     fileInput.value = '';
 }
 
-// ─── Pipeline ───────────────────────────────────
+// ─── Pipeline Steps ─────────────────────────────
 function setStep(stepId, state, detail) {
     const el = document.getElementById(`step-${stepId}`);
     el.className = `step ${state}`;
@@ -72,22 +73,22 @@ function setStep(stepId, state, detail) {
     if (detailEl && detail) detailEl.textContent = detail;
 }
 
+function dataURLtoBlob(base64) {
+    const bytes = atob(base64);
+    const buffer = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
+    return new Blob([buffer], { type: 'image/png' });
+}
+
+// ─── Main Pipeline ──────────────────────────────
 async function startPipeline() {
     const btn = document.getElementById('btnGenerate');
     const activeTab = document.querySelector('.tab.active').dataset.tab;
     const prompt = document.getElementById('promptInput').value.trim();
 
-    // Validate input
-    if (activeTab === 'upload' && !currentImageB64) {
-        alert('Please upload a jewelry photo first.');
-        return;
-    }
-    if (activeTab === 'prompt' && !prompt) {
-        alert('Please describe your jewelry design.');
-        return;
-    }
+    if (activeTab === 'upload' && !currentImageB64) { alert('Please upload a jewelry photo first.'); return; }
+    if (activeTab === 'prompt' && !prompt) { alert('Please describe your jewelry design.'); return; }
 
-    // UI: disable button, show pipeline
     btn.disabled = true;
     btn.classList.add('loading');
     btn.querySelector('.btn-text').textContent = 'Processing...';
@@ -95,19 +96,15 @@ async function startPipeline() {
     document.getElementById('viewerSection').style.display = 'none';
     document.getElementById('analysisCard').style.display = 'none';
     document.getElementById('waxPreview').style.display = 'none';
-
     ['analyze', 'wax', '3d', 'refine'].forEach(s => setStep(s, '', ''));
 
     try {
         let imageB64;
 
-        // Step 1: Get image (generate if prompt, or use upload)
+        // Step 1: Analyze / Generate
         if (activeTab === 'prompt') {
             setStep('analyze', 'active', 'Generating jewelry image from your description...');
-            const res = await fetch('/api/generate-image', {
-                method: 'POST',
-                body: new URLSearchParams({ prompt }),
-            });
+            const res = await fetch('/api/generate-image', { method: 'POST', body: new URLSearchParams({ prompt }) });
             if (!res.ok) throw new Error('Image generation failed');
             const data = await res.json();
             imageB64 = data.image_base64;
@@ -120,10 +117,7 @@ async function startPipeline() {
             setStep('analyze', 'active', 'Analyzing your jewelry photo...');
             const formData = new FormData();
             formData.append('image', dataURLtoBlob(imageB64), 'jewelry.png');
-            const res = await fetch('/api/analyze', {
-                method: 'POST',
-                body: formData,
-            });
+            const res = await fetch('/api/analyze', { method: 'POST', body: formData });
             if (!res.ok) throw new Error('Analysis failed');
             const data = await res.json();
             currentAnalysis = data.analysis;
@@ -131,62 +125,52 @@ async function startPipeline() {
             setStep('analyze', 'done', formatAnalysis(data.analysis));
         }
 
-        // Step 2: Generate wax views
+        // Step 2: Wax views
         setStep('wax', 'active', 'Creating multi-angle wax carving references...');
         let waxViews = [];
         try {
-            const waxRes = await fetch('/api/generate-wax', {
-                method: 'POST',
-                body: new URLSearchParams({ image_base64: imageB64 }),
-            });
+            const waxRes = await fetch('/api/generate-wax', { method: 'POST', body: new URLSearchParams({ image_base64: imageB64 }) });
             if (waxRes.ok) {
                 const waxData = await waxRes.json();
                 waxViews = waxData.wax_views || [];
                 if (waxViews.length > 0) {
                     showWaxViews(waxViews);
-                    // Use front wax view for better 3D generation
                     imageB64 = waxViews[0];
                 }
             }
-        } catch (e) {
-            console.warn('Wax generation failed, using original image:', e);
-        }
+        } catch (e) { console.warn('Wax failed:', e); }
         setStep('wax', 'done', `${waxViews.length} views generated`);
 
-        // Step 3: Generate 3D mesh
-        setStep('3d', 'active', 'Building 3D mesh with AI (this takes 1-3 minutes)...');
-        const meshRes = await fetch('/api/generate-3d', {
-            method: 'POST',
-            body: new URLSearchParams({ image_base64: imageB64, engine: 'hitem3d' }),
-        });
+        // Step 3: 3D mesh
+        setStep('3d', 'active', 'Building 3D mesh with AI (1-3 min)...');
+        const meshRes = await fetch('/api/generate-3d', { method: 'POST', body: new URLSearchParams({ image_base64: imageB64, engine: 'hitem3d' }) });
         if (!meshRes.ok) throw new Error('3D generation failed');
         const meshData = await meshRes.json();
         setStep('3d', 'done', `Engine: ${meshData.engine}`);
 
-        // Step 4: Refine with Blender
+        // Step 4: Refine
         setStep('refine', 'active', 'Cleaning mesh topology & exporting STL...');
-        const refineRes = await fetch('/api/refine', {
-            method: 'POST',
-            body: new URLSearchParams({ glb_url: meshData.url }),
-        });
+        const refineRes = await fetch('/api/refine', { method: 'POST', body: new URLSearchParams({ glb_url: meshData.url }) });
         if (!refineRes.ok) throw new Error('Mesh refinement failed');
         const refineData = await refineRes.json();
-        setStep('refine', 'done', 'Production-ready STL generated');
+        setStep('refine', 'done', refineData.refined ? 'Blender-refined STL ready' : 'Raw AI mesh ready');
 
-        // Store results
         currentSTLB64 = refineData.stl_base64 || null;
         currentGLBB64 = refineData.glb_base64 || null;
 
-        // Show 3D viewer
+        console.log('Pipeline complete:', {
+            hasSTL: !!currentSTLB64,
+            stlLen: currentSTLB64 ? currentSTLB64.length : 0,
+            hasGLB: !!currentGLBB64,
+            glbLen: currentGLBB64 ? currentGLBB64.length : 0,
+            stats: refineData.stats,
+        });
+
+        // Show viewer
         showViewer(refineData);
 
-        // Update download button text
         const dlBtn = document.getElementById('btnDownload');
-        if (currentSTLB64) {
-            dlBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download STL';
-        } else {
-            dlBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download GLB';
-        }
+        dlBtn.textContent = currentSTLB64 ? '⬇ Download STL' : '⬇ Download GLB';
 
     } catch (error) {
         console.error('Pipeline error:', error);
@@ -200,15 +184,11 @@ async function startPipeline() {
     }
 }
 
-// ─── Analysis Display ───────────────────────────
+// ─── Analysis ───────────────────────────────────
 function showAnalysis(analysis) {
     const container = document.getElementById('analysisContent');
     container.innerHTML = '';
-    const fields = {
-        type: 'Type', category: 'Category', metal_type: 'Metal',
-        stone_shape: 'Stone', setting_style: 'Setting', complexity: 'Complexity',
-        description: 'Description'
-    };
+    const fields = { type: 'Type', category: 'Category', metal_type: 'Metal', stone_shape: 'Stone', setting_style: 'Setting', complexity: 'Complexity', description: 'Description' };
     for (const [key, label] of Object.entries(fields)) {
         if (analysis[key]) {
             const tag = document.createElement('div');
@@ -219,32 +199,29 @@ function showAnalysis(analysis) {
     }
     document.getElementById('analysisCard').style.display = 'block';
 }
-
-function formatAnalysis(a) {
-    return `${a.type || 'jewelry'} — ${a.category || 'unknown'} — ${a.complexity || 'moderate'}`;
-}
+function formatAnalysis(a) { return `${a.type || 'jewelry'} — ${a.category || 'unknown'}`; }
 
 // ─── Wax Views ──────────────────────────────────
 function showWaxViews(views) {
     const grid = document.getElementById('waxGrid');
     grid.innerHTML = '';
-    const labels = ['Front', 'Side', 'Top'];
-    views.forEach((b64, i) => {
-        const img = document.createElement('img');
-        img.src = `data:image/png;base64,${b64}`;
-        img.alt = labels[i] || `View ${i + 1}`;
-        img.title = labels[i] || `View ${i + 1}`;
-        grid.appendChild(img);
+    ['Front', 'Side', 'Top'].forEach((label, i) => {
+        if (views[i]) {
+            const img = document.createElement('img');
+            img.src = `data:image/png;base64,${views[i]}`;
+            img.alt = label;
+            grid.appendChild(img);
+        }
     });
     document.getElementById('waxPreview').style.display = 'block';
 }
 
-// ─── 3D Viewer (Three.js) ──────────────────────
+// ─── 3D Viewer ──────────────────────────────────
 function showViewer(data) {
     document.getElementById('viewerSection').style.display = 'block';
 
-    // Show stats
-    if (data.stats) {
+    // Stats
+    if (data.stats && Object.keys(data.stats).length > 0) {
         const s = data.stats;
         document.getElementById('statVerts').textContent = (s.output_vertices || s.input_vertices || 0).toLocaleString();
         document.getElementById('statFaces').textContent = (s.output_faces || s.input_faces || 0).toLocaleString();
@@ -254,180 +231,221 @@ function showViewer(data) {
             const bb = s.bounding_box_mm;
             document.getElementById('statSize').textContent = `${bb.x} × ${bb.y} × ${bb.z}`;
         }
-        document.getElementById('statEngine').textContent = data.engine || '—';
         document.getElementById('meshStats').style.display = 'grid';
     }
+    document.getElementById('statEngine').textContent = data.engine || '—';
 
-    // Init Three.js
     initViewer();
 
-    // Load the model — prefer STL (refined) but fall back to GLB (raw)
+    // Load model
     if (data.stl_base64) {
-        loadSTL(data.stl_base64);
+        console.log('Loading STL, length:', data.stl_base64.length);
+        loadSTLFromBase64(data.stl_base64);
     } else if (data.glb_base64) {
-        loadGLB(data.glb_base64);
+        console.log('Loading GLB, length:', data.glb_base64.length);
+        loadGLBFromBase64(data.glb_base64);
+    } else {
+        console.error('No model data received!');
     }
 
-    // Show refined status
-    if (data.refined === false) {
-        const overlay = document.getElementById('viewerOverlay');
-        overlay.innerHTML = '<p>Raw AI mesh (Blender refinement pending) · Drag to rotate · Scroll to zoom</p>';
-    }
-
-    // Scroll to viewer
     document.getElementById('viewerSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function initViewer() {
-    const canvas = document.getElementById('viewer3d');
-    const wrap = canvas.parentElement;
+    const wrap = document.getElementById('viewerWrap');
 
-    if (renderer) {
-        renderer.dispose();
-        if (controls) controls.dispose();
-    }
+    // Clean up previous
+    if (renderer) { renderer.dispose(); }
+    if (controls) { controls.dispose(); }
+    if (animFrameId) { cancelAnimationFrame(animFrameId); }
+
+    // Remove old canvas
+    const oldCanvas = wrap.querySelector('canvas');
+    if (oldCanvas) oldCanvas.remove();
+
+    // Create new canvas
+    const canvas = document.createElement('canvas');
+    canvas.id = 'viewer3d';
+    canvas.style.cssText = 'width:100%;height:100%;display:block;outline:none;';
+    wrap.insertBefore(canvas, wrap.firstChild);
 
     // Scene
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x111113);
 
     // Camera
-    const aspect = wrap.clientWidth / wrap.clientHeight;
-    camera = new THREE.PerspectiveCamera(45, aspect, 0.01, 1000);
-    camera.position.set(0, 0.5, 2);
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+    camera = new THREE.PerspectiveCamera(45, w / h, 0.001, 1000);
+    camera.position.set(2, 1.5, 2);
 
     // Renderer
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+    renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
 
-    // Controls — full 360° rotation
-    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    // Controls — full 360°
+    controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.enableZoom = true;
-    controls.enablePan = true;
     controls.autoRotate = autoRotate;
     controls.autoRotateSpeed = 2.0;
-    controls.minDistance = 0.5;
-    controls.maxDistance = 10;
+    controls.minDistance = 0.1;
+    controls.maxDistance = 20;
 
-    // Lighting — studio setup for jewelry
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
-    scene.add(ambientLight);
+    // Studio lighting for jewelry
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
-    keyLight.position.set(2, 3, 2);
-    scene.add(keyLight);
+    const key = new THREE.DirectionalLight(0xffffff, 1.2);
+    key.position.set(3, 4, 2);
+    scene.add(key);
 
-    const fillLight = new THREE.DirectionalLight(0xfff8e7, 0.6);
-    fillLight.position.set(-2, 1, -1);
-    scene.add(fillLight);
+    const fill = new THREE.DirectionalLight(0xfff8e7, 0.6);
+    fill.position.set(-3, 2, -1);
+    scene.add(fill);
 
-    const rimLight = new THREE.DirectionalLight(0xd4af37, 0.3);
-    rimLight.position.set(0, -1, -2);
-    scene.add(rimLight);
+    const rim = new THREE.DirectionalLight(0xd4af37, 0.4);
+    rim.position.set(0, -1, -3);
+    scene.add(rim);
 
-    const topLight = new THREE.DirectionalLight(0xffffff, 0.5);
-    topLight.position.set(0, 5, 0);
-    scene.add(topLight);
+    const top = new THREE.DirectionalLight(0xffffff, 0.5);
+    top.position.set(0, 5, 0);
+    scene.add(top);
 
-    // Ground grid
-    const grid = new THREE.GridHelper(4, 20, 0x2a2a2e, 0x1c1c1f);
+    // Grid
+    const grid = new THREE.GridHelper(6, 30, 0x2a2a2e, 0x1c1c1f);
     grid.position.y = -0.5;
     scene.add(grid);
 
-    // Animate
+    // Animate loop
     function animate() {
-        requestAnimationFrame(animate);
+        animFrameId = requestAnimationFrame(animate);
         controls.update();
         renderer.render(scene, camera);
     }
     animate();
 
     // Resize
-    const resizeObserver = new ResizeObserver(() => {
-        const w = wrap.clientWidth;
-        const h = wrap.clientHeight;
-        camera.aspect = w / h;
+    new ResizeObserver(() => {
+        const nw = wrap.clientWidth;
+        const nh = wrap.clientHeight;
+        camera.aspect = nw / nh;
         camera.updateProjectionMatrix();
-        renderer.setSize(w, h);
-    });
-    resizeObserver.observe(wrap);
+        renderer.setSize(nw, nh);
+    }).observe(wrap);
 }
 
-function loadSTL(base64) {
-    const loader = new THREE.STLLoader();
-    const buffer = Uint8Array.from(atob(base64), c => c.charCodeAt(0)).buffer;
-    const geometry = loader.parse(buffer);
+function loadSTLFromBase64(base64) {
+    try {
+        const binaryStr = atob(base64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
 
-    // Center and normalize
-    geometry.computeBoundingBox();
-    const box = geometry.boundingBox;
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-    geometry.translate(-center.x, -center.y, -center.z);
+        const loader = new STLLoader();
+        const geometry = loader.parse(bytes.buffer);
 
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const scale = 1.5 / maxDim;
-    geometry.scale(scale, scale, scale);
+        console.log('STL parsed:', geometry.attributes.position.count, 'vertices');
 
-    geometry.computeVertexNormals();
-
-    // Gold material
-    const material = new THREE.MeshPhysicalMaterial({
-        color: 0xD4AF37,
-        metalness: 0.95,
-        roughness: 0.2,
-        clearcoat: 0.3,
-        clearcoatRoughness: 0.2,
-        reflectivity: 0.9,
-        envMapIntensity: 1.0,
-    });
-
-    // Remove old mesh
-    if (currentMesh) scene.remove(currentMesh);
-
-    currentMesh = new THREE.Mesh(geometry, material);
-    scene.add(currentMesh);
-
-    // Position camera
-    camera.position.set(0, 0.5, 2.5);
-    controls.target.set(0, 0, 0);
-    controls.update();
-}
-
-function loadGLB(base64) {
-    const loader = new THREE.GLTFLoader();
-    const buffer = Uint8Array.from(atob(base64), c => c.charCodeAt(0)).buffer;
-    loader.parse(buffer, '', (gltf) => {
-        if (currentMesh) scene.remove(currentMesh);
-
-        const model = gltf.scene;
-
-        // Center and normalize
-        const box = new THREE.Box3().setFromObject(model);
+        // Center
+        geometry.computeBoundingBox();
+        const box = geometry.boundingBox;
         const center = new THREE.Vector3();
         box.getCenter(center);
-        model.position.sub(center);
+        geometry.translate(-center.x, -center.y, -center.z);
 
+        // Normalize size
         const size = new THREE.Vector3();
         box.getSize(size);
         const maxDim = Math.max(size.x, size.y, size.z);
-        const scale = 1.5 / maxDim;
-        model.scale.multiplyScalar(scale);
+        if (maxDim > 0) {
+            const s = 1.5 / maxDim;
+            geometry.scale(s, s, s);
+        }
 
-        currentMesh = model;
-        scene.add(model);
+        geometry.computeVertexNormals();
 
-        camera.position.set(0, 0.5, 2.5);
+        // Gold material
+        const material = new THREE.MeshPhysicalMaterial({
+            color: 0xD4AF37,
+            metalness: 0.95,
+            roughness: 0.2,
+            clearcoat: 0.3,
+            clearcoatRoughness: 0.2,
+            reflectivity: 0.9,
+        });
+
+        if (currentMesh) scene.remove(currentMesh);
+        currentMesh = new THREE.Mesh(geometry, material);
+        scene.add(currentMesh);
+
+        // Frame camera
+        camera.position.set(1.5, 1, 1.5);
         controls.target.set(0, 0, 0);
         controls.update();
-    });
+
+        console.log('STL loaded and displayed successfully');
+    } catch (err) {
+        console.error('STL load error:', err);
+    }
+}
+
+function loadGLBFromBase64(base64) {
+    try {
+        const binaryStr = atob(base64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+        const loader = new GLTFLoader();
+        loader.parse(bytes.buffer, '', (gltf) => {
+            console.log('GLB parsed, scene children:', gltf.scene.children.length);
+
+            if (currentMesh) scene.remove(currentMesh);
+
+            const model = gltf.scene;
+
+            // Center and scale
+            const box = new THREE.Box3().setFromObject(model);
+            const center = new THREE.Vector3();
+            box.getCenter(center);
+            model.position.sub(center);
+
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            const maxDim = Math.max(size.x, size.y, size.z);
+            if (maxDim > 0) {
+                const s = 1.5 / maxDim;
+                model.scale.multiplyScalar(s);
+            }
+
+            // Apply gold material to all meshes if no materials
+            model.traverse((child) => {
+                if (child.isMesh) {
+                    child.material = new THREE.MeshPhysicalMaterial({
+                        color: 0xD4AF37,
+                        metalness: 0.95,
+                        roughness: 0.2,
+                        clearcoat: 0.3,
+                        clearcoatRoughness: 0.2,
+                    });
+                }
+            });
+
+            currentMesh = model;
+            scene.add(model);
+
+            camera.position.set(1.5, 1, 1.5);
+            controls.target.set(0, 0, 0);
+            controls.update();
+
+            console.log('GLB loaded and displayed successfully');
+        }, (err) => {
+            console.error('GLB parse error:', err);
+        });
+    } catch (err) {
+        console.error('GLB load error:', err);
+    }
 }
 
 // ─── Viewer Controls ────────────────────────────
@@ -441,34 +459,27 @@ function toggleWireframe() {
     wireframeMode = !wireframeMode;
     if (currentMesh) {
         currentMesh.traverse((child) => {
-            if (child.isMesh && child.material) {
-                child.material.wireframe = wireframeMode;
-            }
+            if (child.isMesh && child.material) child.material.wireframe = wireframeMode;
         });
     }
 }
 
 function resetCamera() {
     if (camera && controls) {
-        camera.position.set(0, 0.5, 2.5);
+        camera.position.set(1.5, 1, 1.5);
         controls.target.set(0, 0, 0);
         controls.update();
     }
 }
 
-// ─── Download STL ───────────────────────────────
-function downloadSTL() {
+function downloadModel() {
     const data = currentSTLB64 || currentGLBB64;
     const ext = currentSTLB64 ? 'stl' : 'glb';
-    if (!data) {
-        alert('No model available yet. Generate a 3D model first.');
-        return;
-    }
+    if (!data) { alert('No model available yet.'); return; }
     const bytes = atob(data);
     const buffer = new Uint8Array(bytes.length);
     for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
-    const mime = ext === 'stl' ? 'application/octet-stream' : 'model/gltf-binary';
-    const blob = new Blob([buffer], { type: mime });
+    const blob = new Blob([buffer], { type: 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -477,10 +488,8 @@ function downloadSTL() {
     URL.revokeObjectURL(url);
 }
 
-// ─── Utility ────────────────────────────────────
-function dataURLtoBlob(base64) {
-    const bytes = atob(base64);
-    const buffer = new Uint8Array(bytes.length);
-    for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
-    return new Blob([buffer], { type: 'image/png' });
-}
+// ─── Expose to HTML onclick handlers ────────────
+window.JF = {
+    switchTab, fillPrompt, clearUpload, startPipeline,
+    toggleAutoRotate, toggleWireframe, resetCamera, downloadModel,
+};
