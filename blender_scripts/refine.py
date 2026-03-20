@@ -1,63 +1,44 @@
 """
-Blender headless mesh refinement script for JewelForge.
-Called via: blender --background --python refine.py -- input.glb output.stl output.glb
+Blender headless mesh refinement for JewelForge.
+Called: blender --background --python refine.py -- input.glb output.stl output.glb
 """
 
 import sys
 import json
-import math
-import os
-
 import bpy
 import bmesh
 from mathutils import Vector
 
 
 def get_args():
-    """Parse arguments after '--' separator."""
     argv = sys.argv
     if "--" in argv:
-        args = argv[argv.index("--") + 1:]
-    else:
-        args = []
-    return args
+        return argv[argv.index("--") + 1:]
+    return []
 
 
 def clear_scene():
-    """Remove all objects from the scene."""
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
 
 
 def import_glb(filepath):
-    """Import a GLB file."""
     bpy.ops.import_scene.gltf(filepath=filepath)
-    # Find the imported mesh object
-    mesh_objects = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
-    if not mesh_objects:
-        raise Exception("No mesh found in GLB file")
-    return mesh_objects
+    return [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
 
 
 def get_mesh_stats(obj):
-    """Get mesh statistics."""
     mesh = obj.data
     bm = bmesh.new()
     bm.from_mesh(mesh)
 
-    # Check manifold
-    non_manifold_edges = sum(1 for e in bm.edges if not e.is_manifold)
-    is_manifold = non_manifold_edges == 0
+    non_manifold = sum(1 for e in bm.edges if not e.is_manifold)
+    boundary = sum(1 for e in bm.edges if e.is_boundary)
+    is_manifold = non_manifold == 0
+    is_watertight = is_manifold and boundary == 0
 
-    # Check watertight (manifold + no boundary edges)
-    boundary_edges = sum(1 for e in bm.edges if e.is_boundary)
-    is_watertight = is_manifold and boundary_edges == 0
-
-    # Bounding box
-    bbox = obj.bound_box
     dims = obj.dimensions
 
-    # Volume (approximate for watertight meshes)
     volume = 0.0
     if is_watertight:
         bm.faces.ensure_lookup_table()
@@ -73,11 +54,9 @@ def get_mesh_stats(obj):
     stats = {
         "vertices": len(mesh.vertices),
         "faces": len(mesh.polygons),
-        "edges": len(mesh.edges),
         "is_manifold": is_manifold,
         "is_watertight": is_watertight,
-        "non_manifold_edges": non_manifold_edges,
-        "boundary_edges": boundary_edges,
+        "non_manifold_edges": non_manifold,
         "bounding_box_mm": {
             "x": round(dims.x * 1000, 2),
             "y": round(dims.y * 1000, 2),
@@ -85,116 +64,67 @@ def get_mesh_stats(obj):
         },
         "volume_mm3": round(volume * 1e9, 2),
     }
-
     bm.free()
     return stats
 
 
-def cleanup_mesh(obj):
-    """Basic mesh cleanup: remove doubles, recalculate normals, remove loose."""
+def light_cleanup(obj):
+    """Light cleanup — DON'T destroy the mesh, just fix minor issues."""
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     bpy.ops.object.mode_set(mode='EDIT')
     bpy.ops.mesh.select_all(action='SELECT')
 
-    # Remove doubles (merge by distance)
-    bpy.ops.mesh.remove_doubles(threshold=0.0001)
+    # Merge very close vertices only
+    bpy.ops.mesh.remove_doubles(threshold=0.00001)
 
-    # Delete loose vertices and edges
+    # Remove loose geometry
     bpy.ops.mesh.delete_loose(use_verts=True, use_edges=True, use_faces=False)
 
-    # Recalculate normals outside
-    bpy.ops.mesh.normals_make_consistent(inside=False)
-
-    # Fill holes (small ones)
-    bpy.ops.mesh.select_all(action='DESELECT')
-    bpy.ops.mesh.select_non_manifold(extend=False)
-    try:
-        bpy.ops.mesh.fill_holes(sides=8)
-    except Exception:
-        pass
-
-    bpy.ops.mesh.select_all(action='SELECT')
+    # Fix normals
     bpy.ops.mesh.normals_make_consistent(inside=False)
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
-def remesh_voxel(obj, resolution=0.0002):
-    """Apply voxel remesh for clean topology."""
+def decimate_if_needed(obj, target_faces=200000):
+    """Only decimate if mesh is very high poly. Preserves shape."""
+    face_count = len(obj.data.polygons)
+    if face_count <= target_faces:
+        print(f"JewelForge: {face_count} faces, no decimation needed")
+        return
+
+    ratio = target_faces / face_count
+    print(f"JewelForge: Decimating {face_count} → ~{target_faces} faces (ratio={ratio:.4f})")
+
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
 
-    # Use Blender's voxel remesh
-    mod = obj.modifiers.new(name="Remesh", type='REMESH')
-    mod.mode = 'VOXEL'
-    mod.voxel_size = resolution
-    mod.use_smooth_shade = True
+    mod = obj.modifiers.new(name="Decimate", type='DECIMATE')
+    mod.decimate_type = 'COLLAPSE'
+    mod.ratio = ratio
+    mod.use_collapse_triangulate = True
 
     bpy.ops.object.modifier_apply(modifier=mod.name)
-
-
-def smooth_mesh(obj, iterations=1, factor=0.3):
-    """Apply Laplacian smooth - volume preserving."""
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
-
-    mod = obj.modifiers.new(name="Smooth", type='LAPLACIANSMOOTH')
-    mod.iterations = iterations
-    mod.lambda_factor = factor
-    mod.lambda_border = 0.0  # Don't move boundary verts
-    mod.use_volume_preserve = True
-
-    bpy.ops.object.modifier_apply(modifier=mod.name)
-
-
-def repair_manifold(obj):
-    """Make mesh manifold and watertight."""
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
-    bpy.ops.object.mode_set(mode='EDIT')
-
-    # Select non-manifold
-    bpy.ops.mesh.select_all(action='DESELECT')
-    bpy.ops.mesh.select_non_manifold(extend=False)
-
-    # Try to fill
-    try:
-        bpy.ops.mesh.fill()
-    except Exception:
-        pass
-
-    # Fix normals again
-    bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.mesh.normals_make_consistent(inside=False)
-
-    # Remove interior faces
-    try:
-        bpy.ops.mesh.select_interior_faces()
-        bpy.ops.mesh.delete(type='FACE')
-    except Exception:
-        pass
-
-    bpy.ops.mesh.select_all(action='SELECT')
-    bpy.ops.mesh.normals_make_consistent(inside=False)
-
-    bpy.ops.object.mode_set(mode='OBJECT')
+    print(f"JewelForge: After decimation: {len(obj.data.polygons)} faces")
 
 
 def apply_gold_material(obj):
-    """Apply gold PBR material for GLB export."""
+    """Apply 18K gold PBR material."""
     mat = bpy.data.materials.new(name="18K_Gold")
     mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    bsdf = nodes.get("Principled BSDF")
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
     if bsdf:
-        bsdf.inputs["Base Color"].default_value = (0.831, 0.686, 0.216, 1.0)  # #D4AF37
+        bsdf.inputs["Base Color"].default_value = (0.831, 0.686, 0.216, 1.0)
         bsdf.inputs["Metallic"].default_value = 0.95
         bsdf.inputs["Roughness"].default_value = 0.25
         try:
             bsdf.inputs["Specular IOR Level"].default_value = 0.8
         except KeyError:
-            bsdf.inputs["Specular"].default_value = 0.8
+            try:
+                bsdf.inputs["Specular"].default_value = 0.8
+            except KeyError:
+                pass
 
     if obj.data.materials:
         obj.data.materials[0] = mat
@@ -203,17 +133,15 @@ def apply_gold_material(obj):
 
 
 def export_stl(filepath):
-    """Export as STL in millimeters."""
     bpy.ops.export_mesh.stl(
         filepath=filepath,
         use_selection=True,
-        global_scale=1000.0,  # Convert to mm
+        global_scale=1000.0,  # meters → mm
         ascii=False,
     )
 
 
 def export_glb(filepath):
-    """Export as GLB with materials."""
     bpy.ops.export_scene.gltf(
         filepath=filepath,
         export_format='GLB',
@@ -228,17 +156,18 @@ def main():
         print("Usage: blender --background --python refine.py -- input.glb output.stl output.glb")
         sys.exit(1)
 
-    input_path = args[0]
-    output_stl = args[1]
-    output_glb = args[2]
-
+    input_path, output_stl, output_glb = args[0], args[1], args[2]
     print(f"JewelForge: Processing {input_path}")
 
     # Clear and import
     clear_scene()
     mesh_objects = import_glb(input_path)
 
-    # Join all mesh objects into one
+    if not mesh_objects:
+        print("JewelForge: ERROR - No mesh found in GLB!")
+        sys.exit(1)
+
+    # Join all meshes
     if len(mesh_objects) > 1:
         bpy.context.view_layer.objects.active = mesh_objects[0]
         for obj in mesh_objects:
@@ -250,39 +179,34 @@ def main():
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
 
-    # Get initial stats
+    # Stats before
     initial_stats = get_mesh_stats(obj)
-    print(f"JewelForge: Input - {initial_stats['vertices']} verts, {initial_stats['faces']} faces")
+    print(f"JewelForge: Input — {initial_stats['vertices']} verts, {initial_stats['faces']} faces, "
+          f"manifold={initial_stats['is_manifold']}, watertight={initial_stats['is_watertight']}")
+    print(f"JewelForge: Dimensions — {obj.dimensions.x:.4f} x {obj.dimensions.y:.4f} x {obj.dimensions.z:.4f} m")
 
-    # Step 1: Cleanup
-    cleanup_mesh(obj)
+    # Step 1: Light cleanup (DON'T remesh — Hitem3D output is already good)
+    light_cleanup(obj)
 
-    # Step 2: Voxel remesh — adaptive resolution based on object size
-    dims = obj.dimensions
-    max_dim = max(dims.x, dims.y, dims.z)
-    # Target ~200 voxels along largest dimension
-    voxel_size = max(max_dim / 200.0, 0.0001)
-    remesh_voxel(obj, resolution=voxel_size)
+    # Step 2: Decimate only if over 200K faces (keeps STL downloadable)
+    decimate_if_needed(obj, target_faces=200000)
 
-    # Step 3: Light smooth
-    smooth_mesh(obj, iterations=1, factor=0.2)
-
-    # Step 4: Repair
-    repair_manifold(obj)
-
-    # Get final stats
+    # Step 3: Get final stats
     final_stats = get_mesh_stats(obj)
+    print(f"JewelForge: Output — {final_stats['vertices']} verts, {final_stats['faces']} faces")
 
-    # Step 5: Export STL
+    # Step 4: Export STL (in mm)
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     export_stl(output_stl)
+    print(f"JewelForge: STL exported to {output_stl}")
 
-    # Step 6: Apply gold material and export GLB
+    # Step 5: Apply gold material and export GLB
     apply_gold_material(obj)
     export_glb(output_glb)
+    print(f"JewelForge: GLB exported to {output_glb}")
 
-    # Output stats as JSON for server to parse
+    # Output stats
     stats = {
         "input_vertices": initial_stats["vertices"],
         "input_faces": initial_stats["faces"],

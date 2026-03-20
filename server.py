@@ -446,13 +446,21 @@ async def refine_mesh(
         stats = run_blender_refine(input_glb, output_stl, output_glb)
 
         # Read outputs
-        result = {"success": True, "stats": stats}
+        result = {"success": True, "refined": True, "stats": stats}
         if os.path.exists(output_stl):
-            with open(output_stl, "rb") as f:
-                result["stl_base64"] = base64.b64encode(f.read()).decode()
+            stl_data = open(output_stl, "rb").read()
+            if len(stl_data) > 84:  # More than just the header
+                result["stl_base64"] = base64.b64encode(stl_data).decode()
+                print(f"JewelForge: STL size={len(stl_data)} bytes")
+            else:
+                print(f"JewelForge: WARNING — STL is empty ({len(stl_data)} bytes)")
         if os.path.exists(output_glb):
-            with open(output_glb, "rb") as f:
-                result["glb_base64"] = base64.b64encode(f.read()).decode()
+            glb_data = open(output_glb, "rb").read()
+            if len(glb_data) > 200:
+                result["glb_base64"] = base64.b64encode(glb_data).decode()
+                print(f"JewelForge: GLB size={len(glb_data)} bytes")
+            else:
+                print(f"JewelForge: WARNING — GLB is empty ({len(glb_data)} bytes)")
 
         return result
 
