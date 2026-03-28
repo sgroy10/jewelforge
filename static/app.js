@@ -1,23 +1,14 @@
 /* ═══════════════════════════════════════════════
-   JewelForge — Frontend Application (ES Module)
+   JewelForge — Frontend Application
+   Uses Google <model-viewer> for 3D display
    ═══════════════════════════════════════════════ */
-
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { STLLoader } from 'three/addons/loaders/STLLoader.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ─── State ──────────────────────────────────────
 let currentImageB64 = null;
 let currentSTLB64 = null;
 let currentGLBB64 = null;
+let currentGLBUrl = null; // blob URL for model-viewer
 let currentAnalysis = null;
-
-// Three.js
-let scene, camera, renderer, controls, currentMesh;
-let autoRotate = false;
-let wireframeMode = false;
-let animFrameId = null;
 
 // ─── Tab Switching ──────────────────────────────
 function switchTab(tab) {
@@ -135,7 +126,6 @@ async function startPipeline() {
                 waxViews = waxData.wax_views || [];
                 if (waxViews.length > 0) {
                     showWaxViews(waxViews);
-                    // Keep original image for 3D — wax views are display-only
                 }
             }
         } catch (e) { console.warn('Wax failed:', e); }
@@ -158,19 +148,8 @@ async function startPipeline() {
         currentSTLB64 = refineData.stl_base64 || null;
         currentGLBB64 = refineData.glb_base64 || null;
 
-        console.log('Pipeline complete:', {
-            hasSTL: !!currentSTLB64,
-            stlLen: currentSTLB64 ? currentSTLB64.length : 0,
-            hasGLB: !!currentGLBB64,
-            glbLen: currentGLBB64 ? currentGLBB64.length : 0,
-            stats: refineData.stats,
-        });
-
         // Show viewer
         showViewer(refineData);
-
-        const dlBtn = document.getElementById('btnDownload');
-        dlBtn.textContent = currentSTLB64 ? '⬇ Download STL' : '⬇ Download GLB';
 
     } catch (error) {
         console.error('Pipeline error:', error);
@@ -216,47 +195,14 @@ function showWaxViews(views) {
     document.getElementById('waxPreview').style.display = 'block';
 }
 
-// ─── 3D Viewer ──────────────────────────────────
+// ─── 3D Viewer (model-viewer) ──────────────────
 
-// Wax material used for all meshes
-function createWaxMaterial() {
-    return new THREE.MeshPhysicalMaterial({
-        color: 0x5B8DD9,
-        metalness: 0.0,
-        roughness: 0.28,
-        clearcoat: 0.3,
-        clearcoatRoughness: 0.25,
-        reflectivity: 0.5,
-        envMapIntensity: 0.8,
-        sheen: 0.15,
-        sheenRoughness: 0.3,
-        sheenColor: new THREE.Color(0x88AADD),
-    });
-}
-
-// Auto-fit camera to perfectly frame any model
-function frameCameraToModel(object) {
-    const box = new THREE.Box3().setFromObject(object);
-    const size = new THREE.Vector3();
-    const center = new THREE.Vector3();
-    box.getSize(size);
-    box.getCenter(center);
-
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const fov = camera.fov * (Math.PI / 180);
-    let dist = (maxDim / 2) / Math.tan(fov / 2);
-    dist *= 1.8; // breathing room
-
-    // Position camera at a nice 3/4 angle
-    camera.position.set(
-        center.x + dist * 0.6,
-        center.y + dist * 0.4,
-        center.z + dist * 0.7
-    );
-    controls.target.copy(center);
-    controls.minDistance = dist * 0.2;
-    controls.maxDistance = dist * 5;
-    controls.update();
+function base64ToBlobUrl(base64, mimeType) {
+    const binaryStr = atob(base64);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+    const blob = new Blob([bytes], { type: mimeType });
+    return URL.createObjectURL(blob);
 }
 
 function showViewer(data) {
@@ -277,263 +223,78 @@ function showViewer(data) {
     }
     document.getElementById('statEngine').textContent = data.engine || '—';
 
-    initViewer();
+    // Get GLB data — prefer refined GLB, fall back to raw
+    const glbB64 = data.glb_base64;
+    if (!glbB64) {
+        console.error('No GLB data for viewer');
+        return;
+    }
 
-    if (data.stl_base64) {
-        loadSTLFromBase64(data.stl_base64);
-    } else if (data.glb_base64) {
-        loadGLBFromBase64(data.glb_base64);
-    } else {
-        console.error('No model data received!');
+    // Revoke previous blob URL
+    if (currentGLBUrl) {
+        URL.revokeObjectURL(currentGLBUrl);
+    }
+    currentGLBUrl = base64ToBlobUrl(glbB64, 'model/gltf-binary');
+
+    // Get or create model-viewer element
+    const wrap = document.getElementById('viewerWrap');
+    let mv = wrap.querySelector('model-viewer');
+    if (!mv) {
+        mv = document.createElement('model-viewer');
+        mv.id = 'modelViewer';
+        mv.setAttribute('camera-controls', '');
+        mv.setAttribute('touch-action', 'pan-y');
+        mv.setAttribute('auto-rotate', '');
+        mv.setAttribute('auto-rotate-delay', '0');
+        mv.setAttribute('rotation-per-second', '20deg');
+        mv.setAttribute('interaction-prompt', 'auto');
+        mv.setAttribute('shadow-intensity', '0.6');
+        mv.setAttribute('shadow-softness', '0.8');
+        mv.setAttribute('exposure', '1.1');
+        mv.setAttribute('environment-image', 'neutral');
+        mv.setAttribute('tone-mapping', 'commerce');
+        mv.setAttribute('interpolation-decay', '100');
+        mv.style.cssText = 'width:100%;height:100%;display:block;outline:none;--poster-color:transparent;';
+        // Remove any existing content (old canvas, overlay)
+        wrap.innerHTML = '';
+        wrap.appendChild(mv);
+    }
+
+    mv.setAttribute('src', currentGLBUrl);
+
+    // Update download button
+    const dlBtn = document.getElementById('btnDownload');
+    if (dlBtn) {
+        dlBtn.querySelector('.dl-text').textContent = currentSTLB64 ? 'Download STL' : 'Download GLB';
     }
 
     document.getElementById('viewerSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function initViewer() {
-    const wrap = document.getElementById('viewerWrap');
-
-    // Clean up previous
-    if (renderer) { renderer.dispose(); }
-    if (controls) { controls.dispose(); }
-    if (animFrameId) { cancelAnimationFrame(animFrameId); }
-    const oldCanvas = wrap.querySelector('canvas');
-    if (oldCanvas) oldCanvas.remove();
-
-    const canvas = document.createElement('canvas');
-    canvas.id = 'viewer3d';
-    canvas.style.cssText = 'width:100%;height:100%;display:block;outline:none;touch-action:none;';
-    wrap.insertBefore(canvas, wrap.firstChild);
-
-    // Scene — soft gradient background
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf5f5f8);
-
-    // Camera
-    const w = wrap.clientWidth;
-    const h = wrap.clientHeight;
-    camera = new THREE.PerspectiveCamera(40, w / h, 0.001, 2000);
-    camera.position.set(3, 2, 3);
-
-    // Renderer
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-    renderer.setSize(w, h);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-
-    // Environment map for reflections
-    const pmremGenerator = new THREE.PMREMGenerator(renderer);
-    const envScene = new THREE.Scene();
-    const envGeo = new THREE.SphereGeometry(50, 64, 32);
-    const envMat = new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        uniforms: {},
-        vertexShader: `
-            varying vec3 vWorldPos;
-            void main() {
-                vWorldPos = normalize(position);
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            varying vec3 vWorldPos;
-            void main() {
-                float y = vWorldPos.y * 0.5 + 0.5;
-                vec3 top = vec3(1.0, 0.99, 0.97);
-                vec3 mid = vec3(0.88, 0.90, 0.94);
-                vec3 bot = vec3(0.75, 0.78, 0.84);
-                vec3 col = mix(bot, mid, smoothstep(0.0, 0.45, y));
-                col = mix(col, top, smoothstep(0.45, 1.0, y));
-                gl_FragColor = vec4(col, 1.0);
-            }
-        `
-    });
-    envScene.add(new THREE.Mesh(envGeo, envMat));
-    const envRT = pmremGenerator.fromScene(envScene, 0.04);
-    scene.environment = envRT.texture;
-    pmremGenerator.dispose();
-
-    // Controls — smooth, full 360°
-    controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.06;
-    controls.rotateSpeed = 0.8;
-    controls.zoomSpeed = 1.2;
-    controls.panSpeed = 0.8;
-    controls.autoRotate = autoRotate;
-    controls.autoRotateSpeed = 1.5;
-    controls.enablePan = true;
-    controls.minPolarAngle = 0;
-    controls.maxPolarAngle = Math.PI;
-    controls.enableZoom = true;
-    controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
-
-    // Hide overlay on first interaction
-    const overlay = document.getElementById('viewerOverlay');
-    const hideOverlay = () => {
-        if (overlay) overlay.style.opacity = '0';
-        setTimeout(() => { if (overlay) overlay.style.display = 'none'; }, 300);
-        renderer.domElement.removeEventListener('pointerdown', hideOverlay);
-    };
-    renderer.domElement.addEventListener('pointerdown', hideOverlay);
-
-    // Lighting — studio setup for jewelry
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
-
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.8);
-    keyLight.position.set(4, 6, 5);
-    keyLight.castShadow = true;
-    keyLight.shadow.mapSize.set(1024, 1024);
-    keyLight.shadow.bias = -0.001;
-    scene.add(keyLight);
-
-    const fillLight = new THREE.DirectionalLight(0xdde4ff, 0.9);
-    fillLight.position.set(-5, 3, 3);
-    scene.add(fillLight);
-
-    const rimLight = new THREE.DirectionalLight(0xffffff, 0.7);
-    rimLight.position.set(0, 2, -5);
-    scene.add(rimLight);
-
-    const topLight = new THREE.DirectionalLight(0xffffff, 1.0);
-    topLight.position.set(0, 10, 0);
-    scene.add(topLight);
-
-    const bottomFill = new THREE.DirectionalLight(0xe0e4f0, 0.3);
-    bottomFill.position.set(0, -5, 0);
-    scene.add(bottomFill);
-
-    // Ground shadow catcher (subtle)
-    const groundGeo = new THREE.PlaneGeometry(20, 20);
-    const groundMat = new THREE.ShadowMaterial({ opacity: 0.08 });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -1;
-    ground.receiveShadow = true;
-    scene.add(ground);
-
-    // Render loop
-    function animate() {
-        animFrameId = requestAnimationFrame(animate);
-        controls.update();
-        renderer.render(scene, camera);
-    }
-    animate();
-
-    // Responsive resize
-    const ro = new ResizeObserver(() => {
-        const nw = wrap.clientWidth;
-        const nh = wrap.clientHeight;
-        if (nw === 0 || nh === 0) return;
-        camera.aspect = nw / nh;
-        camera.updateProjectionMatrix();
-        renderer.setSize(nw, nh);
-    });
-    ro.observe(wrap);
-}
-
-function addModelToScene(object) {
-    if (currentMesh) scene.remove(currentMesh);
-
-    // Enable shadows on all meshes
-    object.traverse((child) => {
-        if (child.isMesh) {
-            child.castShadow = true;
-            child.receiveShadow = true;
-        }
-    });
-
-    currentMesh = object;
-    scene.add(object);
-
-    // Auto-fit camera
-    frameCameraToModel(object);
-
-    // Start gentle auto-rotate
-    autoRotate = true;
-    controls.autoRotate = true;
-    document.getElementById('btnRotate').classList.add('active');
-}
-
-function loadSTLFromBase64(base64) {
-    try {
-        const binaryStr = atob(base64);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-
-        const loader = new STLLoader();
-        const geometry = loader.parse(bytes.buffer);
-
-        // Center at origin
-        geometry.computeBoundingBox();
-        const center = new THREE.Vector3();
-        geometry.boundingBox.getCenter(center);
-        geometry.translate(-center.x, -center.y, -center.z);
-        geometry.computeVertexNormals();
-
-        const mesh = new THREE.Mesh(geometry, createWaxMaterial());
-        addModelToScene(mesh);
-    } catch (err) {
-        console.error('STL load error:', err);
-    }
-}
-
-function loadGLBFromBase64(base64) {
-    try {
-        const binaryStr = atob(base64);
-        const bytes = new Uint8Array(binaryStr.length);
-        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-
-        const loader = new GLTFLoader();
-        loader.parse(bytes.buffer, '', (gltf) => {
-            const model = gltf.scene;
-
-            // Center model
-            const box = new THREE.Box3().setFromObject(model);
-            const center = new THREE.Vector3();
-            box.getCenter(center);
-            model.position.sub(center);
-
-            // Apply wax material to all meshes
-            model.traverse((child) => {
-                if (child.isMesh) {
-                    child.material = createWaxMaterial();
-                }
-            });
-
-            addModelToScene(model);
-        }, (err) => {
-            console.error('GLB parse error:', err);
-        });
-    } catch (err) {
-        console.error('GLB load error:', err);
-    }
-}
-
 // ─── Viewer Controls ────────────────────────────
 function toggleAutoRotate() {
-    autoRotate = !autoRotate;
-    if (controls) controls.autoRotate = autoRotate;
-    document.getElementById('btnRotate').classList.toggle('active', autoRotate);
+    const mv = document.getElementById('modelViewer');
+    if (!mv) return;
+    if (mv.hasAttribute('auto-rotate')) {
+        mv.removeAttribute('auto-rotate');
+        document.getElementById('btnRotate').classList.remove('active');
+    } else {
+        mv.setAttribute('auto-rotate', '');
+        document.getElementById('btnRotate').classList.add('active');
+    }
 }
 
 function toggleWireframe() {
-    wireframeMode = !wireframeMode;
-    if (currentMesh) {
-        currentMesh.traverse((child) => {
-            if (child.isMesh && child.material) child.material.wireframe = wireframeMode;
-        });
-    }
+    // model-viewer doesn't support wireframe natively — skip
 }
 
 function resetCamera() {
-    if (camera && controls && currentMesh) {
-        frameCameraToModel(currentMesh);
-    }
+    const mv = document.getElementById('modelViewer');
+    if (!mv) return;
+    mv.cameraOrbit = 'auto auto auto';
+    mv.cameraTarget = 'auto auto auto';
+    mv.fieldOfView = 'auto';
+    mv.jumpCameraToGoal();
 }
 
 function downloadModel() {
