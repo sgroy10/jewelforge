@@ -15,7 +15,7 @@ let currentAnalysis = null;
 
 // Three.js
 let scene, camera, renderer, controls, currentMesh;
-let autoRotate = true;
+let autoRotate = false;
 let wireframeMode = false;
 let animFrameId = null;
 
@@ -269,9 +269,9 @@ function initViewer() {
     canvas.style.cssText = 'width:100%;height:100%;display:block;outline:none;';
     wrap.insertBefore(canvas, wrap.firstChild);
 
-    // Scene — light studio background
+    // Scene — clean white background for wax model visibility
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xf0f0f2);
+    scene.background = new THREE.Color(0xffffff);
 
     // Generate a simple environment map for metallic reflections
     const envScene = new THREE.Scene();
@@ -327,49 +327,50 @@ function initViewer() {
     cubeCamera.update(renderer, envScene);
     scene.environment = cubeRenderTarget.texture;
 
-    // Controls — full 360°
+    // Controls — full 360° manual rotation from all angles
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.autoRotate = autoRotate;
+    controls.autoRotate = false;
     controls.autoRotateSpeed = 2.0;
-    controls.minDistance = 0.1;
-    controls.maxDistance = 20;
+    controls.minDistance = 0.3;
+    controls.maxDistance = 10;
+    controls.enablePan = true;
+    controls.minPolarAngle = 0;          // Allow viewing from directly above
+    controls.maxPolarAngle = Math.PI;    // Allow viewing from directly below
 
-    // Studio lighting — bright, jewelry-showcase style
-    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    // Wax-model lighting — bright, diffuse, shows every surface detail
+    // Key light — strong from upper-right front
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
-    const key = new THREE.DirectionalLight(0xffffff, 1.8);
-    key.position.set(3, 5, 3);
+    const key = new THREE.DirectionalLight(0xffffff, 1.5);
+    key.position.set(3, 5, 4);
     scene.add(key);
 
-    const fill = new THREE.DirectionalLight(0xfff8e7, 1.0);
-    fill.position.set(-4, 3, -1);
+    // Fill light — softer from left
+    const fill = new THREE.DirectionalLight(0xeef2ff, 0.8);
+    fill.position.set(-4, 3, 2);
     scene.add(fill);
 
-    const rim = new THREE.DirectionalLight(0xffffff, 0.8);
-    rim.position.set(0, 0, -4);
-    scene.add(rim);
+    // Back light — rim definition
+    const back = new THREE.DirectionalLight(0xffffff, 0.6);
+    back.position.set(0, 2, -4);
+    scene.add(back);
 
+    // Top light — critical for pave/setting detail
     const top = new THREE.DirectionalLight(0xffffff, 1.0);
-    top.position.set(0, 6, 0);
+    top.position.set(0, 8, 0);
     scene.add(top);
 
-    const bottom = new THREE.DirectionalLight(0xf5f0e8, 0.4);
-    bottom.position.set(0, -3, 0);
+    // Bottom fill — so underside isn't pitch black
+    const bottom = new THREE.DirectionalLight(0xe8eeff, 0.4);
+    bottom.position.set(0, -4, 0);
     scene.add(bottom);
 
-    // Subtle ground shadow disc
-    const groundGeo = new THREE.CircleGeometry(2, 64);
-    const groundMat = new THREE.MeshBasicMaterial({
-        color: 0xd8d8dc,
-        transparent: true,
-        opacity: 0.3,
-    });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.5;
-    scene.add(ground);
+    // Right side fill
+    const right = new THREE.DirectionalLight(0xffffff, 0.5);
+    right.position.set(5, 1, 0);
+    scene.add(right);
 
     // Animate loop
     function animate() {
@@ -418,15 +419,15 @@ function loadSTLFromBase64(base64) {
 
         geometry.computeVertexNormals();
 
-        // Gold material — bright, reflective, jewelry showcase
+        // Blue wax material — shows every surface detail clearly
         const material = new THREE.MeshPhysicalMaterial({
-            color: 0xD4AF37,
-            metalness: 1.0,
-            roughness: 0.15,
-            clearcoat: 0.4,
-            clearcoatRoughness: 0.1,
-            reflectivity: 1.0,
-            envMapIntensity: 1.5,
+            color: 0x4A7DC9,
+            metalness: 0.0,
+            roughness: 0.35,
+            clearcoat: 0.15,
+            clearcoatRoughness: 0.4,
+            reflectivity: 0.3,
+            envMapIntensity: 0.3,
         });
 
         if (currentMesh) scene.remove(currentMesh);
@@ -472,17 +473,17 @@ function loadGLBFromBase64(base64) {
                 model.scale.multiplyScalar(s);
             }
 
-            // Apply gold material to all meshes — bright showcase
+            // Blue wax material — shows every surface detail
             model.traverse((child) => {
                 if (child.isMesh) {
                     child.material = new THREE.MeshPhysicalMaterial({
-                        color: 0xD4AF37,
-                        metalness: 1.0,
-                        roughness: 0.15,
-                        clearcoat: 0.4,
-                        clearcoatRoughness: 0.1,
-                        reflectivity: 1.0,
-                        envMapIntensity: 1.5,
+                        color: 0x4A7DC9,
+                        metalness: 0.0,
+                        roughness: 0.35,
+                        clearcoat: 0.15,
+                        clearcoatRoughness: 0.4,
+                        reflectivity: 0.3,
+                        envMapIntensity: 0.3,
                     });
                 }
             });
