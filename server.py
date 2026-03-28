@@ -64,12 +64,12 @@ async def hitem3d_generate(image_bytes: bytes, filename: str = "jewelry.png") ->
         token = await hitem3d_get_token(client)
         headers = {"Authorization": f"Bearer {token}"}
 
-        # Submit task — geometry only, max resolution, GLB output
+        # Submit task — max quality for jewelry
         files = {
             "images": (filename, image_bytes, "image/png"),
         }
         form_data = {
-            "request_type": "3",       # geometry + texture (4K PBR)
+            "request_type": "1",       # geometry only (v2.0 reliable)
             "model": "hitem3dv2.0",    # latest model
             "resolution": "1536pro",   # highest quality — sharpest geometry
             "face": "2000000",         # max 2M faces — critical for prong/pave detail
@@ -82,13 +82,16 @@ async def hitem3d_generate(image_bytes: bytes, filename: str = "jewelry.png") ->
             data=form_data,
         )
         result = resp.json()
+        print(f"JewelForge: Hitem3D submit response: {result}")
         if str(result.get("code")) != "200":
             raise Exception(f"Hitem3D submit failed: {result}")
 
         task_id = result["data"]["task_id"]
+        print(f"JewelForge: Hitem3D task_id={task_id}, polling...")
 
-        # Poll for completion
-        for _ in range(120):  # 10 min max
+        # Poll for completion — 15 min max for 1536pro
+        last_state = ""
+        for i in range(180):  # 15 min max
             await asyncio.sleep(5)
             resp = await client.get(
                 f"https://api.hitem3d.ai/open-api/v1/query-task?task_id={task_id}",
@@ -96,16 +99,22 @@ async def hitem3d_generate(image_bytes: bytes, filename: str = "jewelry.png") ->
             )
             status = resp.json()
             state = status.get("data", {}).get("state", "")
+            if state != last_state:
+                print(f"JewelForge: Hitem3D [{i*5}s] state={state}")
+                last_state = state
             if state == "success":
+                url = status["data"]["url"]
+                print(f"JewelForge: Hitem3D done! URL={url[:80]}...")
                 return {
-                    "url": status["data"]["url"],
+                    "url": url,
                     "cover_url": status["data"].get("cover_url", ""),
                     "engine": "hitem3d",
                 }
             elif state == "failed":
+                print(f"JewelForge: Hitem3D FAILED: {status}")
                 raise Exception(f"Hitem3D task failed: {status}")
 
-        raise Exception("Hitem3D timeout after 10 minutes")
+        raise Exception(f"Hitem3D timeout after 15 minutes, last state={last_state}")
 
 
 # ──────────────────────────────────────────────
