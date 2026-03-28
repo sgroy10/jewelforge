@@ -217,6 +217,48 @@ function showWaxViews(views) {
 }
 
 // ─── 3D Viewer ──────────────────────────────────
+
+// Wax material used for all meshes
+function createWaxMaterial() {
+    return new THREE.MeshPhysicalMaterial({
+        color: 0x5B8DD9,
+        metalness: 0.0,
+        roughness: 0.28,
+        clearcoat: 0.3,
+        clearcoatRoughness: 0.25,
+        reflectivity: 0.5,
+        envMapIntensity: 0.8,
+        sheen: 0.15,
+        sheenRoughness: 0.3,
+        sheenColor: new THREE.Color(0x88AADD),
+    });
+}
+
+// Auto-fit camera to perfectly frame any model
+function frameCameraToModel(object) {
+    const box = new THREE.Box3().setFromObject(object);
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const fov = camera.fov * (Math.PI / 180);
+    let dist = (maxDim / 2) / Math.tan(fov / 2);
+    dist *= 1.8; // breathing room
+
+    // Position camera at a nice 3/4 angle
+    camera.position.set(
+        center.x + dist * 0.6,
+        center.y + dist * 0.4,
+        center.z + dist * 0.7
+    );
+    controls.target.copy(center);
+    controls.minDistance = dist * 0.2;
+    controls.maxDistance = dist * 5;
+    controls.update();
+}
+
 function showViewer(data) {
     document.getElementById('viewerSection').style.display = 'block';
 
@@ -237,12 +279,9 @@ function showViewer(data) {
 
     initViewer();
 
-    // Load model
     if (data.stl_base64) {
-        console.log('Loading STL, length:', data.stl_base64.length);
         loadSTLFromBase64(data.stl_base64);
     } else if (data.glb_base64) {
-        console.log('Loading GLB, length:', data.glb_base64.length);
         loadGLBFromBase64(data.glb_base64);
     } else {
         console.error('No model data received!');
@@ -258,25 +297,38 @@ function initViewer() {
     if (renderer) { renderer.dispose(); }
     if (controls) { controls.dispose(); }
     if (animFrameId) { cancelAnimationFrame(animFrameId); }
-
-    // Remove old canvas
     const oldCanvas = wrap.querySelector('canvas');
     if (oldCanvas) oldCanvas.remove();
 
-    // Create new canvas
     const canvas = document.createElement('canvas');
     canvas.id = 'viewer3d';
-    canvas.style.cssText = 'width:100%;height:100%;display:block;outline:none;';
+    canvas.style.cssText = 'width:100%;height:100%;display:block;outline:none;touch-action:none;';
     wrap.insertBefore(canvas, wrap.firstChild);
 
-    // Scene — clean white background for wax model visibility
+    // Scene — soft gradient background
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xffffff);
+    scene.background = new THREE.Color(0xf5f5f8);
 
-    // Generate a simple environment map for metallic reflections
+    // Camera
+    const w = wrap.clientWidth;
+    const h = wrap.clientHeight;
+    camera = new THREE.PerspectiveCamera(40, w / h, 0.001, 2000);
+    camera.position.set(3, 2, 3);
+
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+    renderer.setSize(w, h);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    // Environment map for reflections
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
     const envScene = new THREE.Scene();
-    // Gradient environment: warm top, cool sides, neutral bottom
-    const envGeo = new THREE.SphereGeometry(50, 32, 16);
+    const envGeo = new THREE.SphereGeometry(50, 64, 32);
     const envMat = new THREE.ShaderMaterial({
         side: THREE.BackSide,
         uniforms: {},
@@ -291,88 +343,80 @@ function initViewer() {
             varying vec3 vWorldPos;
             void main() {
                 float y = vWorldPos.y * 0.5 + 0.5;
-                vec3 top = vec3(1.0, 0.98, 0.95);
-                vec3 mid = vec3(0.92, 0.91, 0.90);
-                vec3 bot = vec3(0.85, 0.84, 0.83);
-                vec3 col = mix(bot, mid, smoothstep(0.0, 0.4, y));
-                col = mix(col, top, smoothstep(0.4, 1.0, y));
+                vec3 top = vec3(1.0, 0.99, 0.97);
+                vec3 mid = vec3(0.88, 0.90, 0.94);
+                vec3 bot = vec3(0.75, 0.78, 0.84);
+                vec3 col = mix(bot, mid, smoothstep(0.0, 0.45, y));
+                col = mix(col, top, smoothstep(0.45, 1.0, y));
                 gl_FragColor = vec4(col, 1.0);
             }
         `
     });
     envScene.add(new THREE.Mesh(envGeo, envMat));
+    const envRT = pmremGenerator.fromScene(envScene, 0.04);
+    scene.environment = envRT.texture;
+    pmremGenerator.dispose();
 
-    // Camera
-    const w = wrap.clientWidth;
-    const h = wrap.clientHeight;
-    camera = new THREE.PerspectiveCamera(45, w / h, 0.001, 1000);
-    camera.position.set(2, 1.5, 2);
-
-    // Renderer — high quality for jewelry
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    renderer.setSize(w, h);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.4;
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-
-    // Generate cube render target for environment reflections
-    const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
-        format: THREE.RGBAFormat,
-        generateMipmaps: true,
-        minFilter: THREE.LinearMipmapLinearFilter,
-    });
-    const cubeCamera = new THREE.CubeCamera(0.1, 100, cubeRenderTarget);
-    envScene.add(cubeCamera);
-    cubeCamera.update(renderer, envScene);
-    scene.environment = cubeRenderTarget.texture;
-
-    // Controls — full 360° manual rotation from all angles
+    // Controls — smooth, full 360°
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.autoRotate = false;
-    controls.autoRotateSpeed = 2.0;
-    controls.minDistance = 0.3;
-    controls.maxDistance = 10;
+    controls.dampingFactor = 0.06;
+    controls.rotateSpeed = 0.8;
+    controls.zoomSpeed = 1.2;
+    controls.panSpeed = 0.8;
+    controls.autoRotate = autoRotate;
+    controls.autoRotateSpeed = 1.5;
     controls.enablePan = true;
-    controls.minPolarAngle = 0;          // Allow viewing from directly above
-    controls.maxPolarAngle = Math.PI;    // Allow viewing from directly below
+    controls.minPolarAngle = 0;
+    controls.maxPolarAngle = Math.PI;
+    controls.enableZoom = true;
+    controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
 
-    // Wax-model lighting — bright, diffuse, shows every surface detail
-    // Key light — strong from upper-right front
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    // Hide overlay on first interaction
+    const overlay = document.getElementById('viewerOverlay');
+    const hideOverlay = () => {
+        if (overlay) overlay.style.opacity = '0';
+        setTimeout(() => { if (overlay) overlay.style.display = 'none'; }, 300);
+        renderer.domElement.removeEventListener('pointerdown', hideOverlay);
+    };
+    renderer.domElement.addEventListener('pointerdown', hideOverlay);
 
-    const key = new THREE.DirectionalLight(0xffffff, 1.5);
-    key.position.set(3, 5, 4);
-    scene.add(key);
+    // Lighting — studio setup for jewelry
+    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
-    // Fill light — softer from left
-    const fill = new THREE.DirectionalLight(0xeef2ff, 0.8);
-    fill.position.set(-4, 3, 2);
-    scene.add(fill);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.8);
+    keyLight.position.set(4, 6, 5);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(1024, 1024);
+    keyLight.shadow.bias = -0.001;
+    scene.add(keyLight);
 
-    // Back light — rim definition
-    const back = new THREE.DirectionalLight(0xffffff, 0.6);
-    back.position.set(0, 2, -4);
-    scene.add(back);
+    const fillLight = new THREE.DirectionalLight(0xdde4ff, 0.9);
+    fillLight.position.set(-5, 3, 3);
+    scene.add(fillLight);
 
-    // Top light — critical for pave/setting detail
-    const top = new THREE.DirectionalLight(0xffffff, 1.0);
-    top.position.set(0, 8, 0);
-    scene.add(top);
+    const rimLight = new THREE.DirectionalLight(0xffffff, 0.7);
+    rimLight.position.set(0, 2, -5);
+    scene.add(rimLight);
 
-    // Bottom fill — so underside isn't pitch black
-    const bottom = new THREE.DirectionalLight(0xe8eeff, 0.4);
-    bottom.position.set(0, -4, 0);
-    scene.add(bottom);
+    const topLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    topLight.position.set(0, 10, 0);
+    scene.add(topLight);
 
-    // Right side fill
-    const right = new THREE.DirectionalLight(0xffffff, 0.5);
-    right.position.set(5, 1, 0);
-    scene.add(right);
+    const bottomFill = new THREE.DirectionalLight(0xe0e4f0, 0.3);
+    bottomFill.position.set(0, -5, 0);
+    scene.add(bottomFill);
 
-    // Animate loop
+    // Ground shadow catcher (subtle)
+    const groundGeo = new THREE.PlaneGeometry(20, 20);
+    const groundMat = new THREE.ShadowMaterial({ opacity: 0.08 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -1;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Render loop
     function animate() {
         animFrameId = requestAnimationFrame(animate);
         controls.update();
@@ -380,14 +424,39 @@ function initViewer() {
     }
     animate();
 
-    // Resize
-    new ResizeObserver(() => {
+    // Responsive resize
+    const ro = new ResizeObserver(() => {
         const nw = wrap.clientWidth;
         const nh = wrap.clientHeight;
+        if (nw === 0 || nh === 0) return;
         camera.aspect = nw / nh;
         camera.updateProjectionMatrix();
         renderer.setSize(nw, nh);
-    }).observe(wrap);
+    });
+    ro.observe(wrap);
+}
+
+function addModelToScene(object) {
+    if (currentMesh) scene.remove(currentMesh);
+
+    // Enable shadows on all meshes
+    object.traverse((child) => {
+        if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+        }
+    });
+
+    currentMesh = object;
+    scene.add(object);
+
+    // Auto-fit camera
+    frameCameraToModel(object);
+
+    // Start gentle auto-rotate
+    autoRotate = true;
+    controls.autoRotate = true;
+    document.getElementById('btnRotate').classList.add('active');
 }
 
 function loadSTLFromBase64(base64) {
@@ -399,50 +468,15 @@ function loadSTLFromBase64(base64) {
         const loader = new STLLoader();
         const geometry = loader.parse(bytes.buffer);
 
-        console.log('STL parsed:', geometry.attributes.position.count, 'vertices');
-
-        // Center
+        // Center at origin
         geometry.computeBoundingBox();
-        const box = geometry.boundingBox;
         const center = new THREE.Vector3();
-        box.getCenter(center);
+        geometry.boundingBox.getCenter(center);
         geometry.translate(-center.x, -center.y, -center.z);
-
-        // Normalize size
-        const size = new THREE.Vector3();
-        box.getSize(size);
-        const maxDim = Math.max(size.x, size.y, size.z);
-        if (maxDim > 0) {
-            const s = 1.5 / maxDim;
-            geometry.scale(s, s, s);
-        }
-
         geometry.computeVertexNormals();
 
-        // Fix orientation — Hitem3D outputs upside-down relative to Three.js Y-up
-        geometry.rotateX(Math.PI);
-
-        // Blue wax material — shows every surface detail clearly
-        const material = new THREE.MeshPhysicalMaterial({
-            color: 0x4A7DC9,
-            metalness: 0.0,
-            roughness: 0.35,
-            clearcoat: 0.15,
-            clearcoatRoughness: 0.4,
-            reflectivity: 0.3,
-            envMapIntensity: 0.3,
-        });
-
-        if (currentMesh) scene.remove(currentMesh);
-        currentMesh = new THREE.Mesh(geometry, material);
-        scene.add(currentMesh);
-
-        // Frame camera
-        camera.position.set(1.5, 1, 1.5);
-        controls.target.set(0, 0, 0);
-        controls.update();
-
-        console.log('STL loaded and displayed successfully');
+        const mesh = new THREE.Mesh(geometry, createWaxMaterial());
+        addModelToScene(mesh);
     } catch (err) {
         console.error('STL load error:', err);
     }
@@ -456,52 +490,22 @@ function loadGLBFromBase64(base64) {
 
         const loader = new GLTFLoader();
         loader.parse(bytes.buffer, '', (gltf) => {
-            console.log('GLB parsed, scene children:', gltf.scene.children.length);
-
-            if (currentMesh) scene.remove(currentMesh);
-
             const model = gltf.scene;
 
-            // Center and scale
+            // Center model
             const box = new THREE.Box3().setFromObject(model);
             const center = new THREE.Vector3();
             box.getCenter(center);
             model.position.sub(center);
 
-            // Fix orientation — Hitem3D outputs upside-down relative to Three.js Y-up
-            model.rotation.x = Math.PI;
-
-            const size = new THREE.Vector3();
-            box.getSize(size);
-            const maxDim = Math.max(size.x, size.y, size.z);
-            if (maxDim > 0) {
-                const s = 1.5 / maxDim;
-                model.scale.multiplyScalar(s);
-            }
-
-            // Blue wax material — shows every surface detail
+            // Apply wax material to all meshes
             model.traverse((child) => {
                 if (child.isMesh) {
-                    child.material = new THREE.MeshPhysicalMaterial({
-                        color: 0x4A7DC9,
-                        metalness: 0.0,
-                        roughness: 0.35,
-                        clearcoat: 0.15,
-                        clearcoatRoughness: 0.4,
-                        reflectivity: 0.3,
-                        envMapIntensity: 0.3,
-                    });
+                    child.material = createWaxMaterial();
                 }
             });
 
-            currentMesh = model;
-            scene.add(model);
-
-            camera.position.set(1.5, 1, 1.5);
-            controls.target.set(0, 0, 0);
-            controls.update();
-
-            console.log('GLB loaded and displayed successfully');
+            addModelToScene(model);
         }, (err) => {
             console.error('GLB parse error:', err);
         });
@@ -527,10 +531,8 @@ function toggleWireframe() {
 }
 
 function resetCamera() {
-    if (camera && controls) {
-        camera.position.set(1.5, 1, 1.5);
-        controls.target.set(0, 0, 0);
-        controls.update();
+    if (camera && controls && currentMesh) {
+        frameCameraToModel(currentMesh);
     }
 }
 
