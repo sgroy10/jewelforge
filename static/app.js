@@ -419,6 +419,9 @@ function loadSTLFromBase64(base64) {
 
         geometry.computeVertexNormals();
 
+        // Fix orientation — Hitem3D outputs upside-down relative to Three.js Y-up
+        geometry.rotateX(Math.PI);
+
         // Blue wax material — shows every surface detail clearly
         const material = new THREE.MeshPhysicalMaterial({
             color: 0x4A7DC9,
@@ -464,6 +467,9 @@ function loadGLBFromBase64(base64) {
             const center = new THREE.Vector3();
             box.getCenter(center);
             model.position.sub(center);
+
+            // Fix orientation — Hitem3D outputs upside-down relative to Three.js Y-up
+            model.rotation.x = Math.PI;
 
             const size = new THREE.Vector3();
             box.getSize(size);
