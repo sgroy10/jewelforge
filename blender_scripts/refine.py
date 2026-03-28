@@ -1,10 +1,13 @@
 """
 Blender headless mesh refinement for JewelForge.
 Called: blender --background --python refine.py -- input.glb output.stl output.glb
+
+Focus: Sharp edges on settings/prongs, clean topology, jewelry-ready output.
 """
 
 import sys
 import json
+import math
 import bpy
 import bmesh
 from mathutils import Vector
@@ -69,7 +72,7 @@ def get_mesh_stats(obj):
 
 
 def light_cleanup(obj):
-    """Light cleanup — DON'T destroy the mesh, just fix minor issues."""
+    """Light cleanup — fix minor issues without destroying mesh."""
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -87,6 +90,70 @@ def light_cleanup(obj):
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+def sharpen_edges(obj, angle_threshold_deg=35):
+    """Mark sharp edges based on face angle — critical for prongs, settings, pave.
+
+    Edges where adjacent faces meet at a sharp angle (> threshold) get marked as
+    sharp/creased. This preserves the crisp look of prong tips, channel walls, and
+    bezel edges that AI models tend to smooth out.
+    """
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+    mesh = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+
+    angle_threshold = math.radians(angle_threshold_deg)
+    sharp_count = 0
+
+    # Get or create crease layer
+    crease_layer = bm.edges.layers.crease.verify()
+
+    for edge in bm.edges:
+        if len(edge.link_faces) == 2:
+            face_angle = edge.calc_face_angle(0)
+            if face_angle > angle_threshold:
+                edge.smooth = False  # Mark as sharp
+                edge[crease_layer] = 1.0  # Full crease
+                sharp_count += 1
+
+    bm.to_mesh(mesh)
+    bm.free()
+
+    # Enable auto-smooth with custom normals
+    mesh.use_auto_smooth = True
+    mesh.auto_smooth_angle = angle_threshold
+
+    # Add custom split normals for sharp display
+    if sharp_count > 0:
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='DESELECT')
+        bpy.ops.mesh.edges_select_sharp(sharpness=angle_threshold)
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    print(f"JewelForge: Marked {sharp_count} sharp edges (threshold={angle_threshold_deg}°)")
+    return sharp_count
+
+
+def smooth_surface(obj):
+    """Apply smooth shading with sharp edges preserved.
+
+    Smooth shading + auto-smooth + sharp edge marks =
+    smooth bands/shanks but crisp prong tips and settings.
+    """
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+    # Smooth shade the whole object
+    bpy.ops.object.shade_smooth()
+
+    # The sharp marks from sharpen_edges() will override smooth on those edges
+    print("JewelForge: Applied smooth shading with sharp edge preservation")
+
+
 def decimate_if_needed(obj, target_faces=200000):
     """Only decimate if mesh is very high poly. Preserves shape."""
     face_count = len(obj.data.polygons)
@@ -95,7 +162,7 @@ def decimate_if_needed(obj, target_faces=200000):
         return
 
     ratio = target_faces / face_count
-    print(f"JewelForge: Decimating {face_count} → ~{target_faces} faces (ratio={ratio:.4f})")
+    print(f"JewelForge: Decimating {face_count} -> ~{target_faces} faces (ratio={ratio:.4f})")
 
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
@@ -107,6 +174,26 @@ def decimate_if_needed(obj, target_faces=200000):
 
     bpy.ops.object.modifier_apply(modifier=mod.name)
     print(f"JewelForge: After decimation: {len(obj.data.polygons)} faces")
+
+
+def apply_weighted_normals(obj):
+    """Apply weighted normals modifier for better shading on curved surfaces.
+
+    This makes curved surfaces (ring bands, bezels) look smoother while
+    sharp edges stay sharp.
+    """
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+    try:
+        mod = obj.modifiers.new(name="WeightedNormal", type='WEIGHTED_NORMAL')
+        mod.weight = 50
+        mod.mode = 'FACE_AREA'
+        mod.keep_sharp = True  # Respect our sharp edge marks
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+        print("JewelForge: Applied weighted normals")
+    except Exception as e:
+        print(f"JewelForge: Weighted normals skipped — {e}")
 
 
 def apply_gold_material(obj):
@@ -136,7 +223,7 @@ def export_stl(filepath):
     bpy.ops.export_mesh.stl(
         filepath=filepath,
         use_selection=True,
-        global_scale=1000.0,  # meters → mm
+        global_scale=1000.0,  # meters -> mm
         ascii=False,
     )
 
@@ -185,23 +272,32 @@ def main():
           f"manifold={initial_stats['is_manifold']}, watertight={initial_stats['is_watertight']}")
     print(f"JewelForge: Dimensions — {obj.dimensions.x:.4f} x {obj.dimensions.y:.4f} x {obj.dimensions.z:.4f} m")
 
-    # Step 1: Light cleanup (DON'T remesh — Hitem3D output is already good)
+    # Step 1: Light cleanup
     light_cleanup(obj)
 
-    # Step 2: Decimate only if over 200K faces (keeps STL downloadable)
+    # Step 2: Mark sharp edges — this is what makes prongs/settings look crisp
+    sharpen_edges(obj, angle_threshold_deg=35)
+
+    # Step 3: Smooth shading with sharp edge preservation
+    smooth_surface(obj)
+
+    # Step 4: Weighted normals for better curved surface rendering
+    apply_weighted_normals(obj)
+
+    # Step 5: Decimate only if over 200K faces
     decimate_if_needed(obj, target_faces=200000)
 
-    # Step 3: Get final stats
+    # Step 6: Get final stats
     final_stats = get_mesh_stats(obj)
     print(f"JewelForge: Output — {final_stats['vertices']} verts, {final_stats['faces']} faces")
 
-    # Step 4: Export STL (in mm)
+    # Step 7: Export STL (in mm)
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     export_stl(output_stl)
     print(f"JewelForge: STL exported to {output_stl}")
 
-    # Step 5: Apply gold material and export GLB
+    # Step 8: Apply gold material and export GLB
     apply_gold_material(obj)
     export_glb(output_glb)
     print(f"JewelForge: GLB exported to {output_glb}")

@@ -269,9 +269,38 @@ function initViewer() {
     canvas.style.cssText = 'width:100%;height:100%;display:block;outline:none;';
     wrap.insertBefore(canvas, wrap.firstChild);
 
-    // Scene
+    // Scene — light studio background
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x111113);
+    scene.background = new THREE.Color(0xf0f0f2);
+
+    // Generate a simple environment map for metallic reflections
+    const envScene = new THREE.Scene();
+    // Gradient environment: warm top, cool sides, neutral bottom
+    const envGeo = new THREE.SphereGeometry(50, 32, 16);
+    const envMat = new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        uniforms: {},
+        vertexShader: `
+            varying vec3 vWorldPos;
+            void main() {
+                vWorldPos = normalize(position);
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            varying vec3 vWorldPos;
+            void main() {
+                float y = vWorldPos.y * 0.5 + 0.5;
+                vec3 top = vec3(1.0, 0.98, 0.95);
+                vec3 mid = vec3(0.92, 0.91, 0.90);
+                vec3 bot = vec3(0.85, 0.84, 0.83);
+                vec3 col = mix(bot, mid, smoothstep(0.0, 0.4, y));
+                col = mix(col, top, smoothstep(0.4, 1.0, y));
+                gl_FragColor = vec4(col, 1.0);
+            }
+        `
+    });
+    envScene.add(new THREE.Mesh(envGeo, envMat));
 
     // Camera
     const w = wrap.clientWidth;
@@ -279,12 +308,24 @@ function initViewer() {
     camera = new THREE.PerspectiveCamera(45, w / h, 0.001, 1000);
     camera.position.set(2, 1.5, 2);
 
-    // Renderer
+    // Renderer — high quality for jewelry
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
+    renderer.toneMappingExposure = 1.4;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    // Generate cube render target for environment reflections
+    const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
+        format: THREE.RGBAFormat,
+        generateMipmaps: true,
+        minFilter: THREE.LinearMipmapLinearFilter,
+    });
+    const cubeCamera = new THREE.CubeCamera(0.1, 100, cubeRenderTarget);
+    envScene.add(cubeCamera);
+    cubeCamera.update(renderer, envScene);
+    scene.environment = cubeRenderTarget.texture;
 
     // Controls — full 360°
     controls = new OrbitControls(camera, renderer.domElement);
@@ -295,29 +336,40 @@ function initViewer() {
     controls.minDistance = 0.1;
     controls.maxDistance = 20;
 
-    // Studio lighting for jewelry
-    scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    // Studio lighting — bright, jewelry-showcase style
+    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
 
-    const key = new THREE.DirectionalLight(0xffffff, 1.2);
-    key.position.set(3, 4, 2);
+    const key = new THREE.DirectionalLight(0xffffff, 1.8);
+    key.position.set(3, 5, 3);
     scene.add(key);
 
-    const fill = new THREE.DirectionalLight(0xfff8e7, 0.6);
-    fill.position.set(-3, 2, -1);
+    const fill = new THREE.DirectionalLight(0xfff8e7, 1.0);
+    fill.position.set(-4, 3, -1);
     scene.add(fill);
 
-    const rim = new THREE.DirectionalLight(0xd4af37, 0.4);
-    rim.position.set(0, -1, -3);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.8);
+    rim.position.set(0, 0, -4);
     scene.add(rim);
 
-    const top = new THREE.DirectionalLight(0xffffff, 0.5);
-    top.position.set(0, 5, 0);
+    const top = new THREE.DirectionalLight(0xffffff, 1.0);
+    top.position.set(0, 6, 0);
     scene.add(top);
 
-    // Grid
-    const grid = new THREE.GridHelper(6, 30, 0x2a2a2e, 0x1c1c1f);
-    grid.position.y = -0.5;
-    scene.add(grid);
+    const bottom = new THREE.DirectionalLight(0xf5f0e8, 0.4);
+    bottom.position.set(0, -3, 0);
+    scene.add(bottom);
+
+    // Subtle ground shadow disc
+    const groundGeo = new THREE.CircleGeometry(2, 64);
+    const groundMat = new THREE.MeshBasicMaterial({
+        color: 0xd8d8dc,
+        transparent: true,
+        opacity: 0.3,
+    });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.5;
+    scene.add(ground);
 
     // Animate loop
     function animate() {
@@ -366,14 +418,15 @@ function loadSTLFromBase64(base64) {
 
         geometry.computeVertexNormals();
 
-        // Gold material
+        // Gold material — bright, reflective, jewelry showcase
         const material = new THREE.MeshPhysicalMaterial({
             color: 0xD4AF37,
-            metalness: 0.95,
-            roughness: 0.2,
-            clearcoat: 0.3,
-            clearcoatRoughness: 0.2,
-            reflectivity: 0.9,
+            metalness: 1.0,
+            roughness: 0.15,
+            clearcoat: 0.4,
+            clearcoatRoughness: 0.1,
+            reflectivity: 1.0,
+            envMapIntensity: 1.5,
         });
 
         if (currentMesh) scene.remove(currentMesh);
@@ -419,15 +472,17 @@ function loadGLBFromBase64(base64) {
                 model.scale.multiplyScalar(s);
             }
 
-            // Apply gold material to all meshes if no materials
+            // Apply gold material to all meshes — bright showcase
             model.traverse((child) => {
                 if (child.isMesh) {
                     child.material = new THREE.MeshPhysicalMaterial({
                         color: 0xD4AF37,
-                        metalness: 0.95,
-                        roughness: 0.2,
-                        clearcoat: 0.3,
-                        clearcoatRoughness: 0.2,
+                        metalness: 1.0,
+                        roughness: 0.15,
+                        clearcoat: 0.4,
+                        clearcoatRoughness: 0.1,
+                        reflectivity: 1.0,
+                        envMapIntensity: 1.5,
                     });
                 }
             });
