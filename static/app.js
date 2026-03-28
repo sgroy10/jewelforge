@@ -135,7 +135,7 @@ async function startPipeline() {
                 waxViews = waxData.wax_views || [];
                 if (waxViews.length > 0) {
                     showWaxViews(waxViews);
-                    imageB64 = waxViews[0];
+                    // Keep original image for 3D — wax views are display-only
                 }
             }
         } catch (e) { console.warn('Wax failed:', e); }

@@ -508,9 +508,7 @@ async def full_pipeline(
         try:
             wax_views = await gemini_generate_wax_views(image_bytes, analysis)
             wax_b64 = [base64.b64encode(w).decode() for w in wax_views]
-            # Use front wax view for 3D generation (often better than original photo)
-            if wax_views:
-                image_bytes = wax_views[0]
+            # Wax views are for display only — always use original image for 3D generation
         except Exception as e:
             print(f"Wax generation failed, using original image: {e}")
 
