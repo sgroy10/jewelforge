@@ -69,10 +69,10 @@ async def hitem3d_generate(image_bytes: bytes, filename: str = "jewelry.png") ->
             "images": (filename, image_bytes, "image/png"),
         }
         form_data = {
-            "request_type": "1",       # geometry only
+            "request_type": "3",       # geometry + texture (4K PBR)
             "model": "hitem3dv2.0",    # latest model
-            "resolution": "1536",      # high resolution
-            "face": "500000",          # 500K faces
+            "resolution": "1536pro",   # highest quality — sharpest geometry
+            "face": "2000000",         # max 2M faces — critical for prong/pave detail
             "format": "2",             # GLB
         }
         resp = await client.post(
