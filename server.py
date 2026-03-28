@@ -11,10 +11,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import httpx
 
 app = FastAPI(title="JewelForge", version="1.0.0")
@@ -33,6 +34,7 @@ HITEM3D_ACCESS_KEY = os.environ.get("HITEM3D_ACCESS_KEY", "")
 HITEM3D_SECRET_KEY = os.environ.get("HITEM3D_SECRET_KEY", "")
 RODIN_API_KEY = os.environ.get("RODIN_API_KEY", "")
 REMESHY_API_KEY = os.environ.get("REMESHY_API_KEY", "")
+JEWELFORGE_API_KEY = os.environ.get("JEWELFORGE_API_KEY", "")
 
 TEMP_DIR = Path(tempfile.gettempdir()) / "jewelforge"
 TEMP_DIR.mkdir(exist_ok=True)
@@ -326,7 +328,38 @@ check_blender()
 
 
 def run_blender_refine(input_glb: str, output_stl: str, output_glb: str) -> dict:
-    """Run Blender headless mesh refinement."""
+    """Run Blender headless mesh refinement (legacy — no scaling)."""
+    if not BLENDER_AVAILABLE:
+        raise Exception("Blender not available")
+
+    script_path = Path(__file__).parent / "blender_scripts" / "refine.py"
+    result = subprocess.run(
+        [
+            "blender", "--background", "--python", str(script_path),
+            "--", input_glb, output_stl, output_glb, "ring", "17.35",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    # Parse stats from Blender stdout
+    stats = {}
+    for line in result.stdout.split("\n"):
+        if line.startswith("JEWELFORGE_STATS:"):
+            try:
+                stats = json.loads(line.replace("JEWELFORGE_STATS:", ""))
+            except json.JSONDecodeError:
+                pass
+    if result.returncode != 0 and not os.path.exists(output_stl):
+        raise Exception(f"Blender failed: {result.stderr[-500:]}")
+    return stats
+
+
+def run_blender_scale_and_repair(
+    input_glb: str, output_stl: str, output_glb: str,
+    jewelry_type: str, target_mm: float,
+) -> dict:
+    """Run Blender headless with proper scaling."""
     if not BLENDER_AVAILABLE:
         raise Exception("Blender not available")
 
@@ -335,12 +368,16 @@ def run_blender_refine(input_glb: str, output_stl: str, output_glb: str) -> dict
         [
             "blender", "--background", "--python", str(script_path),
             "--", input_glb, output_stl, output_glb,
+            jewelry_type, str(target_mm),
         ],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=180,
     )
-    # Parse stats from Blender stdout
+    print(f"JewelForge: Blender stdout:\n{result.stdout[-2000:]}")
+    if result.stderr:
+        print(f"JewelForge: Blender stderr:\n{result.stderr[-1000:]}")
+
     stats = {}
     for line in result.stdout.split("\n"):
         if line.startswith("JEWELFORGE_STATS:"):
@@ -581,6 +618,122 @@ async def full_pipeline(
                 os.remove(f)
             except OSError:
                 pass
+
+
+# ──────────────────────────────────────────────
+# Scale & Repair API
+# ──────────────────────────────────────────────
+
+RING_SIZE_MM = {
+    3: 14.05, 3.5: 14.45, 4: 14.86, 4.5: 15.27, 5: 15.7,
+    5.5: 16.10, 6: 16.45, 6.5: 16.92, 7: 17.35, 7.5: 17.75,
+    8: 18.19, 8.5: 18.53, 9: 19.41, 9.5: 19.62, 10: 19.84,
+    10.5: 20.20, 11: 20.68, 11.5: 21.08, 12: 21.49,
+}
+
+
+class ScaleAndRepairRequest(BaseModel):
+    glb_url: str
+    jewelry_type: str  # ring, pendant, earring, figurine
+    us_ring_size: Optional[float] = None
+    height_mm: Optional[float] = None
+
+
+# Serve refined files from temp dir
+@app.get("/api/files/{filename}")
+async def serve_file(filename: str):
+    filepath = TEMP_DIR / filename
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    media = "model/gltf-binary" if filename.endswith(".glb") else "application/octet-stream"
+    return FileResponse(str(filepath), media_type=media, filename=filename)
+
+
+@app.post("/api/scale-and-repair")
+async def scale_and_repair(
+    request: Request,
+    body: ScaleAndRepairRequest,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Scale raw AI mesh to real-world mm and repair topology."""
+    # Auth check
+    if not JEWELFORGE_API_KEY:
+        raise HTTPException(status_code=500, detail="JEWELFORGE_API_KEY not configured")
+    if x_api_key != JEWELFORGE_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if not BLENDER_AVAILABLE:
+        raise HTTPException(status_code=500, detail="Blender not available on this server")
+
+    # Determine target dimension
+    jewelry_type = body.jewelry_type.lower()
+    if jewelry_type == "ring":
+        ring_size = body.us_ring_size or 7
+        target_mm = RING_SIZE_MM.get(ring_size)
+        if target_mm is None:
+            # Interpolate for non-standard sizes
+            target_mm = RING_SIZE_MM.get(round(ring_size * 2) / 2, 17.35)
+        print(f"JewelForge: Ring size {ring_size} → {target_mm}mm diameter")
+    elif jewelry_type in ("pendant", "earring", "figurine"):
+        target_mm = body.height_mm or 30.0
+        print(f"JewelForge: {jewelry_type} target height → {target_mm}mm")
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown jewelry_type: {jewelry_type}")
+
+    job_id = str(uuid.uuid4())[:8]
+    input_glb = str(TEMP_DIR / f"{job_id}_input.glb")
+    output_stl = str(TEMP_DIR / f"{job_id}_refined.stl")
+    output_glb = str(TEMP_DIR / f"{job_id}_refined.glb")
+
+    try:
+        # Download GLB
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(body.glb_url)
+            resp.raise_for_status()
+            with open(input_glb, "wb") as f:
+                f.write(resp.content)
+        print(f"JewelForge: Downloaded GLB ({len(resp.content)} bytes)")
+
+        # Run Blender
+        stats = run_blender_scale_and_repair(
+            input_glb, output_stl, output_glb,
+            jewelry_type, target_mm,
+        )
+
+        # Build response with served file URLs
+        base_url = str(request.base_url).rstrip("/")
+        result = {
+            "success": True,
+            "stats": stats,
+        }
+
+        # Keep output files for serving (don't clean up yet — they'll be GC'd eventually)
+        if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
+            result["glb_url"] = f"{base_url}/api/files/{job_id}_refined.glb"
+            print(f"JewelForge: Refined GLB = {os.path.getsize(output_glb)} bytes")
+
+        if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
+            result["stl_url"] = f"{base_url}/api/files/{job_id}_refined.stl"
+            print(f"JewelForge: Refined STL = {os.path.getsize(output_stl)} bytes")
+
+        # Clean up input only
+        try:
+            os.remove(input_glb)
+        except OSError:
+            pass
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up everything on error
+        for f in [input_glb, output_stl, output_glb]:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Serve static frontend
