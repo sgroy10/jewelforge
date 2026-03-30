@@ -328,7 +328,7 @@ check_blender()
 
 
 def run_blender_refine(input_glb: str, output_stl: str, output_glb: str) -> dict:
-    """Run Blender headless mesh refinement (legacy — no scaling)."""
+    """Run Blender headless mesh refinement (defaults to ring, US size 7)."""
     if not BLENDER_AVAILABLE:
         raise Exception("Blender not available")
 
@@ -336,11 +336,11 @@ def run_blender_refine(input_glb: str, output_stl: str, output_glb: str) -> dict
     result = subprocess.run(
         [
             "blender", "--background", "--python", str(script_path),
-            "--", input_glb, output_stl, output_glb,
+            "--", input_glb, output_stl, output_glb, "ring", "17.35",
         ],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=180,
     )
     stats = {}
     for line in result.stdout.split("\n"):
