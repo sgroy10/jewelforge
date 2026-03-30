@@ -458,7 +458,9 @@ async def generate_3d(
     image_base64: str = Form(...),
     engine: str = Form("hitem3d"),
 ):
-    """Generate 3D mesh from image. Returns GLB download URL."""
+    """Generate 3D mesh from image. Returns GLB download URL.
+    WARNING: This blocks for 5-15 min with 1536pro. Use /api/generate-3d/submit + /api/generate-3d/poll instead.
+    """
     image_bytes = base64.b64decode(image_base64)
 
     if engine == "hitem3d" and HITEM3D_ACCESS_KEY:
@@ -473,6 +475,67 @@ async def generate_3d(
         return result
 
     raise HTTPException(status_code=500, detail="No 3D engine available")
+
+
+@app.post("/api/generate-3d/submit")
+async def generate_3d_submit(
+    image_base64: str = Form(...),
+    engine: str = Form("hitem3d"),
+):
+    """Submit 3D generation task. Returns task_id for polling. Non-blocking."""
+    image_bytes = base64.b64decode(image_base64)
+
+    if engine == "hitem3d" and HITEM3D_ACCESS_KEY:
+        async with httpx.AsyncClient(timeout=300) as client:
+            token = await hitem3d_get_token(client)
+            headers = {"Authorization": f"Bearer {token}"}
+            files = {"images": ("jewelry.png", image_bytes, "image/png")}
+            form_data = {
+                "request_type": "1",
+                "model": "hitem3dv2.0",
+                "resolution": "1536pro",
+                "face": "2000000",
+                "format": "2",
+            }
+            resp = await client.post(
+                "https://api.hitem3d.ai/open-api/v1/submit-task",
+                headers=headers, files=files, data=form_data,
+            )
+            result = resp.json()
+            print(f"JewelForge: Hitem3D submit: {result}")
+            if str(result.get("code")) != "200":
+                raise HTTPException(status_code=500, detail=f"Hitem3D submit failed: {result}")
+            return {
+                "task_id": result["data"]["task_id"],
+                "engine": "hitem3d",
+                "status": "submitted",
+            }
+
+    raise HTTPException(status_code=500, detail="No 3D engine available")
+
+
+@app.get("/api/generate-3d/poll/{task_id}")
+async def generate_3d_poll(task_id: str):
+    """Poll Hitem3D task status. Returns state + URL when done."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        token = await hitem3d_get_token(client)
+        resp = await client.get(
+            f"https://api.hitem3d.ai/open-api/v1/query-task?task_id={task_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        status = resp.json()
+        data = status.get("data", {})
+        state = data.get("state", "unknown")
+
+        result = {"task_id": task_id, "state": state}
+        if state == "success":
+            result["url"] = data["url"]
+            result["cover_url"] = data.get("cover_url", "")
+            result["engine"] = "hitem3d"
+        elif state == "failed":
+            result["error"] = str(status)
+
+        return result
 
 
 @app.post("/api/refine")

@@ -131,11 +131,40 @@ async function startPipeline() {
         } catch (e) { console.warn('Wax failed:', e); }
         setStep('wax', 'done', `${waxViews.length} views generated`);
 
-        // Step 3: 3D mesh
-        setStep('3d', 'active', 'Building 3D mesh with AI (1-3 min)...');
-        const meshRes = await fetch('/api/generate-3d', { method: 'POST', body: new URLSearchParams({ image_base64: imageB64, engine: 'hitem3d' }) });
-        if (!meshRes.ok) throw new Error('3D generation failed');
-        const meshData = await meshRes.json();
+        // Step 3: 3D mesh — submit then poll (avoids Railway 5-min timeout)
+        setStep('3d', 'active', 'Submitting to AI 3D engine...');
+        const submitRes = await fetch('/api/generate-3d/submit', { method: 'POST', body: new URLSearchParams({ image_base64: imageB64, engine: 'hitem3d' }) });
+        if (!submitRes.ok) throw new Error('3D submission failed');
+        const submitData = await submitRes.json();
+        const taskId = submitData.task_id;
+
+        // Poll until done (up to 15 min)
+        let meshData = null;
+        for (let i = 0; i < 180; i++) {
+            await new Promise(r => setTimeout(r, 5000)); // 5s interval
+            const elapsed = ((i + 1) * 5);
+            const mins = Math.floor(elapsed / 60);
+            const secs = elapsed % 60;
+            setStep('3d', 'active', `Building 3D mesh... ${mins}m ${secs}s`);
+
+            try {
+                const pollRes = await fetch(`/api/generate-3d/poll/${taskId}`);
+                if (!pollRes.ok) continue;
+                const pollData = await pollRes.json();
+
+                if (pollData.state === 'success') {
+                    meshData = pollData;
+                    break;
+                } else if (pollData.state === 'failed') {
+                    throw new Error('3D generation failed on Hitem3D');
+                }
+                // queueing/processing — keep polling
+            } catch (e) {
+                if (e.message.includes('failed on Hitem3D')) throw e;
+                console.warn('Poll error, retrying:', e);
+            }
+        }
+        if (!meshData) throw new Error('3D generation timed out (15 min)');
         setStep('3d', 'done', `Engine: ${meshData.engine}`);
 
         // Step 4: Refine
