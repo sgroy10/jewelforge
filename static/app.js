@@ -131,9 +131,10 @@ async function startPipeline() {
         } catch (e) { console.warn('Wax failed:', e); }
         setStep('wax', 'done', `${waxViews.length} views generated`);
 
-        // Step 3: 3D mesh — submit then poll (avoids Railway 5-min timeout)
-        setStep('3d', 'active', 'Submitting to AI 3D engine...');
-        const submitRes = await fetch('/api/generate-3d/submit', { method: 'POST', body: new URLSearchParams({ image_base64: imageB64, engine: 'hitem3d' }) });
+        // Step 3: 3D mesh — use wax front view (stone-free metal structure) for cleaner 3D
+        const meshInputB64 = (waxViews.length > 0) ? waxViews[0] : imageB64;
+        setStep('3d', 'active', waxViews.length > 0 ? 'Submitting stone-free wax to 3D engine...' : 'Submitting to AI 3D engine...');
+        const submitRes = await fetch('/api/generate-3d/submit', { method: 'POST', body: new URLSearchParams({ image_base64: meshInputB64, engine: 'hitem3d' }) });
         if (!submitRes.ok) throw new Error('3D submission failed');
         const submitData = await submitRes.json();
         const taskId = submitData.task_id;

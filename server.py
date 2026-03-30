@@ -279,13 +279,17 @@ async def gemini_generate_wax_views(image_bytes: bytes, analysis: dict) -> list[
                                 },
                                 {
                                     "text": (
-                                        f"Transform this jewelry image into a blue wax carving model, {angle}. "
+                                        f"Transform this jewelry image into a blue wax carving model showing ONLY the metal framework, {angle}. "
+                                        f"CRITICAL: Remove ALL stones, diamonds, and gems completely. "
+                                        f"Show empty stone seats as clean circular holes or cups where stones would sit. "
+                                        f"Show prongs as sharp, distinct metal fingers — NOT blobs. "
                                         f"The wax should be uniform blue color (#4A90D9 to #2E5A8B). "
-                                        f"Show it as a solid wax carving with ambient occlusion lighting. "
-                                        f"No stones, no gems — just the metal structure as a wax model. "
-                                        f"Clean dark background. Sharp edges, clear detail. "
+                                        f"Solid wax carving with ambient occlusion lighting. "
+                                        f"Clean dark background. Sharp crisp edges on all prongs and settings. "
                                         f"This is a {analysis.get('type', 'jewelry')} - {analysis.get('description', '')}. "
-                                        f"Professional quality, high detail."
+                                        f"Think of this as a jeweler's wax model BEFORE stones are set — "
+                                        f"the metal structure only, ready for stone setting. "
+                                        f"Professional CAD quality, high detail, no gems."
                                     )
                                 },
                             ]
