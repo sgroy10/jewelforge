@@ -354,6 +354,56 @@ def run_blender_refine(input_glb: str, output_stl: str, output_glb: str) -> dict
     return stats
 
 
+def run_blender_pave_cleanup(
+    input_glb: str,
+    output_stl: str,
+    output_glb: str,
+    min_stone_radius: float = 0.3,
+    max_stone_radius: float = 1.5,
+    seat_depth: float = 0.6,
+    detection_threshold: float = 0.15,
+) -> dict:
+    """Run Blender pave stone cleanup — detect bumps, cut clean seats."""
+    if not BLENDER_AVAILABLE:
+        raise Exception("Blender not available")
+
+    params = {
+        "min_stone_radius": min_stone_radius,
+        "max_stone_radius": max_stone_radius,
+        "seat_depth": seat_depth,
+        "detection_threshold": detection_threshold,
+    }
+    params_json = json.dumps(params)
+
+    script_path = Path(__file__).parent / "blender_scripts" / "pave_cleanup.py"
+    result = subprocess.run(
+        [
+            "blender", "--background", "--python", str(script_path),
+            "--", input_glb, output_stl, output_glb, params_json,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,  # 5 min — boolean ops on dense mesh take time
+    )
+
+    for line in result.stdout.split("\n"):
+        if line.startswith("JewelForge:"):
+            print(line)
+
+    stats = {}
+    for line in result.stdout.split("\n"):
+        if line.startswith("JEWELFORGE_STATS:"):
+            try:
+                stats = json.loads(line.replace("JEWELFORGE_STATS:", ""))
+            except json.JSONDecodeError:
+                pass
+
+    if result.returncode != 0 and not os.path.exists(output_stl):
+        stderr_tail = result.stderr[-500:] if result.stderr else "no stderr"
+        raise Exception(f"Blender pave_cleanup failed: {stderr_tail}")
+    return stats
+
+
 def run_blender_scale_and_repair(
     input_glb: str,
     output_stl: str,
@@ -784,6 +834,76 @@ async def full_pipeline(
                 result["glb_base64"] = base64.b64encode(f.read()).decode()
         else:
             result["glb_base64"] = base64.b64encode(raw_glb_bytes).decode()
+
+        return result
+
+    finally:
+        for f in [input_glb, output_stl, output_glb]:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+
+@app.post("/api/pave-cleanup")
+async def pave_cleanup(
+    glb_url: str = Form(None),
+    glb_base64: str = Form(None),
+    min_stone_radius: float = Form(0.3),
+    max_stone_radius: float = Form(1.5),
+    seat_depth: float = Form(0.6),
+    detection_threshold: float = Form(0.15),
+):
+    """Detect pave stone bumps and cut clean hemispherical stone seats.
+
+    Input: GLB mesh (already scaled to mm) from /api/refine or /api/scale-and-repair.
+    Process: Detect bumps → cluster into stone positions → boolean-cut seats → sharpen edges.
+    Output: Cleaned STL + GLB with production-ready stone seats.
+
+    Params:
+    - min_stone_radius: 0.3mm (melee) to filter noise
+    - max_stone_radius: 1.5mm (small stones) to filter non-pave features
+    - seat_depth: 0.6 = 60% of stone radius depth
+    - detection_threshold: 0.15mm protrusion to count as a bump peak
+    """
+    job_id = str(uuid.uuid4())[:8]
+    input_glb = str(TEMP_DIR / f"{job_id}_pave_input.glb")
+    output_stl = str(TEMP_DIR / f"{job_id}_pave_output.stl")
+    output_glb = str(TEMP_DIR / f"{job_id}_pave_output.glb")
+
+    try:
+        if glb_url:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.get(glb_url)
+                resp.raise_for_status()
+                with open(input_glb, "wb") as f:
+                    f.write(resp.content)
+        elif glb_base64:
+            with open(input_glb, "wb") as f:
+                f.write(base64.b64decode(glb_base64))
+        else:
+            raise HTTPException(status_code=400, detail="Provide glb_url or glb_base64")
+
+        stats = run_blender_pave_cleanup(
+            input_glb, output_stl, output_glb,
+            min_stone_radius=min_stone_radius,
+            max_stone_radius=max_stone_radius,
+            seat_depth=seat_depth,
+            detection_threshold=detection_threshold,
+        )
+
+        result = {"success": True, "stats": stats}
+
+        if os.path.exists(output_stl):
+            stl_data = open(output_stl, "rb").read()
+            if len(stl_data) > 84:
+                result["stl_base64"] = base64.b64encode(stl_data).decode()
+                print(f"JewelForge: Pave STL size={len(stl_data)} bytes")
+        if os.path.exists(output_glb):
+            glb_data = open(output_glb, "rb").read()
+            if len(glb_data) > 200:
+                result["glb_base64"] = base64.b64encode(glb_data).decode()
+                print(f"JewelForge: Pave GLB size={len(glb_data)} bytes")
 
         return result
 

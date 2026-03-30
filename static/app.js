@@ -87,7 +87,7 @@ async function startPipeline() {
     document.getElementById('viewerSection').style.display = 'none';
     document.getElementById('analysisCard').style.display = 'none';
     document.getElementById('waxPreview').style.display = 'none';
-    ['analyze', 'wax', '3d', 'refine'].forEach(s => setStep(s, '', ''));
+    ['analyze', 'wax', '3d', 'refine', 'pave'].forEach(s => setStep(s, '', ''));
 
     try {
         let imageB64;
@@ -167,23 +167,59 @@ async function startPipeline() {
         if (!meshData) throw new Error('3D generation timed out (15 min)');
         setStep('3d', 'done', `Engine: ${meshData.engine}`);
 
-        // Step 4: Refine
-        setStep('refine', 'active', 'Cleaning mesh topology & exporting STL...');
+        // Step 4: Refine (scale + cleanup)
+        setStep('refine', 'active', 'Scaling to real mm & cleaning mesh...');
         const refineRes = await fetch('/api/refine', { method: 'POST', body: new URLSearchParams({ glb_url: meshData.url }) });
         if (!refineRes.ok) throw new Error('Mesh refinement failed');
         const refineData = await refineRes.json();
-        setStep('refine', 'done', refineData.refined ? 'Blender-refined STL ready' : 'Raw AI mesh ready');
+        setStep('refine', 'done', refineData.refined ? 'Scaled & cleaned' : 'Raw AI mesh');
 
-        currentSTLB64 = refineData.stl_base64 || null;
-        currentGLBB64 = refineData.glb_base64 || null;
+        let finalData = refineData;
+
+        // Step 5: Pave cleanup (if pave/prong setting detected)
+        const hasPave = currentAnalysis &&
+            (currentAnalysis.setting_style === 'pave' ||
+             currentAnalysis.setting_style === 'prong' ||
+             currentAnalysis.setting_style === 'channel' ||
+             currentAnalysis.complexity === 'complex' ||
+             currentAnalysis.category === 'motif-ring');
+
+        if (hasPave && refineData.glb_base64) {
+            setStep('pave', 'active', 'Cutting clean stone seats (pave cleanup)...');
+            try {
+                const paveRes = await fetch('/api/pave-cleanup', {
+                    method: 'POST',
+                    body: new URLSearchParams({ glb_base64: refineData.glb_base64 }),
+                });
+                if (paveRes.ok) {
+                    const paveData = await paveRes.json();
+                    if (paveData.success && paveData.stats && paveData.stats.stones_detected > 0) {
+                        finalData = paveData;
+                        setStep('pave', 'done', `${paveData.stats.stones_detected} stone seats cut`);
+                    } else {
+                        setStep('pave', 'done', 'No pave stones detected — skipped');
+                    }
+                } else {
+                    setStep('pave', 'done', 'Pave cleanup skipped');
+                }
+            } catch (e) {
+                console.warn('Pave cleanup failed:', e);
+                setStep('pave', 'done', 'Skipped — using refined mesh');
+            }
+        } else {
+            setStep('pave', 'done', 'Not needed for this design');
+        }
+
+        currentSTLB64 = finalData.stl_base64 || refineData.stl_base64 || null;
+        currentGLBB64 = finalData.glb_base64 || refineData.glb_base64 || null;
 
         // Show viewer
-        showViewer(refineData);
+        showViewer(finalData.stats ? finalData : refineData);
 
     } catch (error) {
         console.error('Pipeline error:', error);
-        const steps = ['analyze', 'wax', '3d', 'refine'];
-        const activeStep = steps.find(s => document.getElementById(`step-${s}`).classList.contains('active'));
+        const steps = ['analyze', 'wax', '3d', 'refine', 'pave'];
+        const activeStep = steps.find(s => document.getElementById(`step-${s}`) && document.getElementById(`step-${s}`).classList.contains('active'));
         if (activeStep) setStep(activeStep, 'error', error.message);
     } finally {
         btn.disabled = false;
