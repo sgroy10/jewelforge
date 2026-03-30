@@ -597,6 +597,7 @@ async def scale_and_repair(
 @app.post("/api/full-pipeline")
 async def full_pipeline(
     image: UploadFile = File(None),
+    image_url: str = Form(None),
     prompt: str = Form(None),
     engine: str = Form("hitem3d"),
     skip_wax: bool = Form(False),
@@ -604,22 +605,31 @@ async def full_pipeline(
     us_ring_size: float = Form(None),
     height_mm: float = Form(None),
 ):
-    """Full pipeline: image/prompt → analysis → wax → 3D → scaled STL.
+    """Full pipeline: image/prompt/URL → analysis → wax → 3D → scaled STL.
 
-    Scaling params (optional — if provided, uses scale_and_repair):
+    Image input (pick one):
+    - image: file upload (multipart)
+    - image_url: URL to download image from (e.g. Supabase storage URL)
+    - prompt: text description to generate image via Gemini
+
+    Scaling params (optional):
     - jewelry_type: ring/pendant/earring/bracelet/other
     - us_ring_size: 3-13 (for rings only)
     - height_mm: target height in mm (for non-ring types)
-
-    If no scaling params, falls back to basic refine (legacy behavior).
     """
     # Step 1: Get the jewelry image
     if image:
         image_bytes = await image.read()
+    elif image_url:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
+            image_bytes = resp.content
+        print(f"JewelForge: Downloaded image from URL ({len(image_bytes)} bytes)")
     elif prompt:
         image_bytes = await gemini_generate_image(prompt)
     else:
-        raise HTTPException(status_code=400, detail="Provide image or prompt")
+        raise HTTPException(status_code=400, detail="Provide image, image_url, or prompt")
 
     image_b64 = base64.b64encode(image_bytes).decode()
 
