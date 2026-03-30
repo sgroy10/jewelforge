@@ -261,7 +261,7 @@ async def gemini_generate_wax_views(image_bytes: bytes, analysis: dict) -> list[
     """Generate blue wax carving views from jewelry image."""
     b64 = base64.b64encode(image_bytes).decode()
     views = []
-    view_angles = ["front view straight on", "left side view at 90 degrees", "top-down view from above"]
+    view_angles = ["front view straight on", "left side view at 90 degrees", "three-quarter angle view showing the ring from slightly above and to the right"]
 
     async with httpx.AsyncClient(timeout=120) as client:
         for angle in view_angles:
