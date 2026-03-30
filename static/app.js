@@ -131,7 +131,7 @@ async function startPipeline() {
         } catch (e) { console.warn('Wax failed:', e); }
         setStep('wax', 'done', `${waxViews.length} views generated`);
 
-        // Step 3: 3D mesh — use LAST wax view (cleanest, best 3/4 angle) for 3D
+        // Step 3: 3D mesh — use best wax view for 3D (last one, or original as fallback)
         const meshInputB64 = (waxViews.length > 0) ? waxViews[waxViews.length - 1] : imageB64;
         setStep('3d', 'active', waxViews.length > 0 ? 'Submitting stone-free wax to 3D engine...' : 'Submitting to AI 3D engine...');
         const submitRes = await fetch('/api/generate-3d/submit', { method: 'POST', body: new URLSearchParams({ image_base64: meshInputB64, engine: 'hitem3d' }) });
