@@ -176,39 +176,8 @@ async function startPipeline() {
 
         let finalData = refineData;
 
-        // Step 5: Pave cleanup (if pave/prong setting detected)
-        const hasPave = currentAnalysis &&
-            (currentAnalysis.setting_style === 'pave' ||
-             currentAnalysis.setting_style === 'prong' ||
-             currentAnalysis.setting_style === 'channel' ||
-             currentAnalysis.complexity === 'complex' ||
-             currentAnalysis.category === 'motif-ring');
-
-        if (hasPave && refineData.glb_base64) {
-            setStep('pave', 'active', 'Cutting clean stone seats (pave cleanup)...');
-            try {
-                const paveRes = await fetch('/api/pave-cleanup', {
-                    method: 'POST',
-                    body: new URLSearchParams({ glb_base64: refineData.glb_base64 }),
-                });
-                if (paveRes.ok) {
-                    const paveData = await paveRes.json();
-                    if (paveData.success && paveData.stats && paveData.stats.stones_detected > 0) {
-                        finalData = paveData;
-                        setStep('pave', 'done', `${paveData.stats.stones_detected} stone seats cut`);
-                    } else {
-                        setStep('pave', 'done', 'No pave stones detected — skipped');
-                    }
-                } else {
-                    setStep('pave', 'done', 'Pave cleanup skipped');
-                }
-            } catch (e) {
-                console.warn('Pave cleanup failed:', e);
-                setStep('pave', 'done', 'Skipped — using refined mesh');
-            }
-        } else {
-            setStep('pave', 'done', 'Not needed for this design');
-        }
+        // Step 5: Pave cleanup — DISABLED (auto-detection unreliable on AI meshes)
+        setStep('pave', 'done', 'Skipped — using Hitem3D mesh directly');
 
         currentSTLB64 = finalData.stl_base64 || refineData.stl_base64 || null;
         currentGLBB64 = finalData.glb_base64 || refineData.glb_base64 || null;
