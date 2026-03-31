@@ -329,11 +329,15 @@ async def grounding_pipeline(image_bytes: bytes, analysis: dict) -> dict:
         # ─── Stage 1: Pencil Sketch ─────────────────
         print("JewelForge: [STAGE 1] Generating pencil sketch...")
         sketch_bytes = await _gemini_image_transform(client, input_b64, (
-            f"Create a detailed pencil sketch / line drawing of this {jewelry_type}. "
-            f"Show ONLY the metal framework structure — outlines of the band, prongs, settings, bezels. "
-            f"DO NOT draw any stones, diamonds, or gems. Where stones exist, draw empty circular outlines "
-            f"showing the empty seat/cup. Clean white background, precise technical drawing style. "
-            f"Think jewelry CAD wireframe — just the metal skeleton, no stones."
+            f"Create a detailed pencil sketch / technical drawing of this {jewelry_type} as a SEMI-MOUNT — metal framework only, absolutely NO stones. "
+            f"CRITICAL: Where every stone exists in the original, draw an OPEN THROUGH-HOLE — a clean empty circle that you can see through to the white background behind it. "
+            f"These holes represent drilled stone seats in the metal. Each hole must be OPEN and EMPTY — you should see white paper through each circle. "
+            f"The prongs should be tiny dots or small bumps BETWEEN the holes, not covering them. "
+            f"The center stone seat must be a large open circle/bore — completely empty, see-through. "
+            f"Halo stones = ring of small open circles around the center hole. "
+            f"Pave band stones = row of small open circles along the band. "
+            f"White background, precise technical jewelry CAD drawing style. "
+            f"Think of a Rhino/Matrix CAD semi-mount rendering — all stone positions are clean drilled through-holes."
         ))
         sketch_b64 = base64.b64encode(sketch_bytes).decode()
         print(f"JewelForge: [STAGE 1] Pencil sketch done ({len(sketch_bytes)} bytes)")
@@ -341,12 +345,14 @@ async def grounding_pipeline(image_bytes: bytes, analysis: dict) -> dict:
         # ─── Stage 2: Gold Render (from sketch) ─────
         print("JewelForge: [STAGE 2] Generating gold render from sketch...")
         gold_bytes = await _gemini_image_transform(client, sketch_b64, (
-            f"Transform this pencil sketch into a photorealistic 18K polished gold render. "
-            f"This is a {jewelry_type}. Render it as solid polished gold metal — NO stones, NO diamonds, NO gems. "
-            f"Where the sketch shows empty circular outlines, render them as smooth concave cups in the gold. "
-            f"The prongs should be clean sharp gold fingers pointing up, with empty space where stones would go. "
-            f"Studio lighting, white background, professional product photography. "
-            f"Pure gold metal only — the kind of piece you'd see BEFORE a stone setter adds the diamonds."
+            f"Transform this pencil sketch into a photorealistic 18K polished gold semi-mount render. "
+            f"This is a {jewelry_type}. CRITICAL: Keep ALL the open through-holes from the sketch EXACTLY as they are. "
+            f"Every circular hole in the sketch must remain as an OPEN DRILLED HOLE in the gold — you must see through each hole to the background. "
+            f"Do NOT fill in any holes. Do NOT add stones. Do NOT close any openings. "
+            f"The center hole stays open. The halo holes stay open. The band holes stay open. "
+            f"Render the METAL ONLY in polished 18K gold with these clean drilled bores. "
+            f"Small prong beads visible between holes. Studio lighting, white background. "
+            f"This is a semi-mount — ready for a stone setter to place stones into the open holes."
         ))
         gold_b64 = base64.b64encode(gold_bytes).decode()
         print(f"JewelForge: [STAGE 2] Gold render done ({len(gold_bytes)} bytes)")
@@ -363,12 +369,14 @@ async def grounding_pipeline(image_bytes: bytes, analysis: dict) -> dict:
         for i, angle in enumerate(view_angles):
             # Each wax view is generated from the GOLD render (not original photo)
             wax_bytes = await _gemini_image_transform(client, gold_b64, (
-                f"Transform this gold jewelry render into a uniform blue wax carving model, {angle}. "
-                f"Uniform solid matte blue color (#3A7BC8). Smooth surface like polished wax. "
-                f"Keep the EXACT same metal structure — no changes to shape, just change material to blue wax. "
-                f"NO stones, NO gems (there should be none in the gold render either). "
-                f"Clean empty cups where stones will be set. Sharp clean prongs. "
-                f"Dark background. Soft ambient occlusion lighting. Professional quality."
+                f"Transform this gold semi-mount render into a blue wax carving model, {angle}. "
+                f"CRITICAL: This must be an EXACT CLONE of the gold render — same shape, same proportions, same structure. "
+                f"The ONLY change is material: gold → uniform matte blue wax (#3A7BC8). "
+                f"ALL open through-holes from the gold render MUST remain as open through-holes in the wax. "
+                f"Do NOT fill any holes. Do NOT close any openings. Do NOT add stones. "
+                f"Every drilled bore must stay open — you should see the dark background through each hole. "
+                f"Smooth blue wax surface. Dark background. Soft ambient occlusion lighting. "
+                f"This is an exact material swap — nothing else changes."
             ))
             wax_views.append(wax_bytes)
             print(f"JewelForge: [STAGE 3] Wax view {i+1}/3 done ({len(wax_bytes)} bytes)")
