@@ -729,10 +729,11 @@ async def generate_3d_poll(task_id: str):
 
 @app.post("/api/refine")
 async def refine_mesh(
+    request: Request,
     glb_url: str = Form(None),
     glb_base64: str = Form(None),
 ):
-    """Refine a GLB mesh using Blender. Returns STL + GLB."""
+    """Refine a GLB mesh using Blender. Returns file URLs (not base64) to avoid huge responses."""
     job_id = str(uuid.uuid4())[:8]
     input_glb = str(TEMP_DIR / f"{job_id}_input.glb")
     output_stl = str(TEMP_DIR / f"{job_id}_output.stl")
@@ -755,31 +756,34 @@ async def refine_mesh(
         # Run Blender
         stats = run_blender_refine(input_glb, output_stl, output_glb)
 
-        # Read outputs
+        base_url = str(request.base_url).rstrip("/")
         result = {"success": True, "refined": True, "stats": stats}
-        if os.path.exists(output_stl):
-            stl_data = open(output_stl, "rb").read()
-            if len(stl_data) > 84:  # More than just the header
-                result["stl_base64"] = base64.b64encode(stl_data).decode()
-                print(f"JewelForge: STL size={len(stl_data)} bytes")
-            else:
-                print(f"JewelForge: WARNING — STL is empty ({len(stl_data)} bytes)")
-        if os.path.exists(output_glb):
-            glb_data = open(output_glb, "rb").read()
-            if len(glb_data) > 200:
-                result["glb_base64"] = base64.b64encode(glb_data).decode()
-                print(f"JewelForge: GLB size={len(glb_data)} bytes")
-            else:
-                print(f"JewelForge: WARNING — GLB is empty ({len(glb_data)} bytes)")
+
+        # Return file URLs instead of base64 — avoids 20MB+ JSON responses
+        if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
+            result["stl_url"] = f"{base_url}/api/files/{job_id}_output.stl"
+            print(f"JewelForge: STL size={os.path.getsize(output_stl)} bytes")
+        if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
+            result["glb_url"] = f"{base_url}/api/files/{job_id}_output.glb"
+            print(f"JewelForge: GLB size={os.path.getsize(output_glb)} bytes")
+
+        # Clean up input only — keep outputs for serving
+        try:
+            os.remove(input_glb)
+        except OSError:
+            pass
 
         return result
 
-    finally:
+    except HTTPException:
+        raise
+    except Exception as e:
         for f in [input_glb, output_stl, output_glb]:
             try:
                 os.remove(f)
             except OSError:
                 pass
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/scale-and-repair")

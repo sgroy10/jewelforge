@@ -7,7 +7,8 @@
 let currentImageB64 = null;
 let currentSTLB64 = null;
 let currentGLBB64 = null;
-let currentGLBUrl = null; // blob URL for model-viewer
+let currentGLBUrl = null; // URL for model-viewer (file URL or blob URL)
+let currentSTLUrl = null; // URL for STL download
 let currentAnalysis = null;
 
 // ─── Tab Switching ──────────────────────────────
@@ -180,23 +181,22 @@ async function startPipeline() {
         if (!meshData) throw new Error('3D generation timed out (15 min)');
         setStep('3d', 'done', `Engine: ${meshData.engine}`);
 
-        // Step 4: Refine (scale + cleanup)
+        // Step 4: Refine (scale + cleanup) — returns file URLs not base64
         setStep('refine', 'active', 'Scaling to real mm & cleaning mesh...');
         const refineRes = await fetch('/api/refine', { method: 'POST', body: new URLSearchParams({ glb_url: meshData.url }) });
         if (!refineRes.ok) throw new Error('Mesh refinement failed');
         const refineData = await refineRes.json();
         setStep('refine', 'done', refineData.refined ? 'Scaled & cleaned' : 'Raw AI mesh');
 
-        let finalData = refineData;
+        // Step 5: Done
+        setStep('pave', 'done', 'Complete');
 
-        // Step 5: Pave cleanup — DISABLED (auto-detection unreliable on AI meshes)
-        setStep('pave', 'done', 'Skipped — using Hitem3D mesh directly');
+        // Store URLs for download
+        currentSTLUrl = refineData.stl_url || null;
+        currentGLBUrl = refineData.glb_url || null;
 
-        currentSTLB64 = finalData.stl_base64 || refineData.stl_base64 || null;
-        currentGLBB64 = finalData.glb_base64 || refineData.glb_base64 || null;
-
-        // Show viewer
-        showViewer(finalData.stats ? finalData : refineData);
+        // Show viewer using GLB URL directly
+        showViewer(refineData);
 
     } catch (error) {
         console.error('Pipeline error:', error);
@@ -270,18 +270,21 @@ function showViewer(data) {
     }
     document.getElementById('statEngine').textContent = data.engine || '—';
 
-    // Get GLB data — prefer refined GLB, fall back to raw
-    const glbB64 = data.glb_base64;
-    if (!glbB64) {
+    // Get GLB — prefer URL (lightweight), fall back to base64
+    let viewerSrc = null;
+    if (data.glb_url) {
+        viewerSrc = data.glb_url;
+        currentGLBUrl = data.glb_url;
+    } else if (data.glb_base64) {
+        if (currentGLBUrl && currentGLBUrl.startsWith('blob:')) {
+            URL.revokeObjectURL(currentGLBUrl);
+        }
+        viewerSrc = base64ToBlobUrl(data.glb_base64, 'model/gltf-binary');
+        currentGLBUrl = viewerSrc;
+    } else {
         console.error('No GLB data for viewer');
         return;
     }
-
-    // Revoke previous blob URL
-    if (currentGLBUrl) {
-        URL.revokeObjectURL(currentGLBUrl);
-    }
-    currentGLBUrl = base64ToBlobUrl(glbB64, 'model/gltf-binary');
 
     // Get or create model-viewer element
     const wrap = document.getElementById('viewerWrap');
@@ -307,12 +310,12 @@ function showViewer(data) {
         wrap.appendChild(mv);
     }
 
-    mv.setAttribute('src', currentGLBUrl);
+    mv.setAttribute('src', viewerSrc);
 
     // Update download button
     const dlBtn = document.getElementById('btnDownload');
     if (dlBtn) {
-        dlBtn.querySelector('.dl-text').textContent = currentSTLB64 ? 'Download STL' : 'Download GLB';
+        dlBtn.querySelector('.dl-text').textContent = (currentSTLUrl || currentSTLB64) ? 'Download STL' : 'Download GLB';
     }
 
     document.getElementById('viewerSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -345,19 +348,29 @@ function resetCamera() {
 }
 
 function downloadModel() {
-    const data = currentSTLB64 || currentGLBB64;
-    const ext = currentSTLB64 ? 'stl' : 'glb';
-    if (!data) { alert('No model available yet.'); return; }
-    const bytes = atob(data);
-    const buffer = new Uint8Array(bytes.length);
-    for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
-    const blob = new Blob([buffer], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
+    // Prefer URL-based download (no base64 decoding needed)
+    const url = currentSTLUrl || currentGLBUrl;
+    const ext = currentSTLUrl ? 'stl' : 'glb';
+    if (!url) {
+        // Fallback to base64 if available
+        const data = currentSTLB64 || currentGLBB64;
+        if (!data) { alert('No model available yet.'); return; }
+        const bytes = atob(data);
+        const buffer = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
+        const blob = new Blob([buffer], { type: 'application/octet-stream' });
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = `jewelforge_${Date.now()}.${ext}`;
+        a.click();
+        URL.revokeObjectURL(blobUrl);
+        return;
+    }
     const a = document.createElement('a');
     a.href = url;
     a.download = `jewelforge_${Date.now()}.${ext}`;
     a.click();
-    URL.revokeObjectURL(url);
 }
 
 // ─── Expose to HTML onclick handlers ────────────
