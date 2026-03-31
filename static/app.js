@@ -118,32 +118,30 @@ async function startPipeline() {
         }
 
         // Step 2: Grounding Pipeline — Sketch → Gold → Wax (visual chain + audit)
-        setStep('grounding', 'active', 'Sketch → Gold Render → Wax (visual chain)...');
-        let meshInputB64 = imageB64; // fallback
-        try {
-            const groundRes = await fetch('/api/grounding-pipeline', {
-                method: 'POST',
-                body: new URLSearchParams({ image_base64: imageB64 }),
-            });
-            if (groundRes.ok) {
-                const gData = await groundRes.json();
-                // Show wax views
-                if (gData.wax_views_base64 && gData.wax_views_base64.length > 0) {
-                    showWaxViews(gData.wax_views_base64);
-                }
-                // Use audited best image for 3D
-                meshInputB64 = gData.best_for_3d_base64;
-                const auditMsg = gData.audit_passed
-                    ? `✓ Audit passed — wax ${gData.best_wax_idx + 1} is stone-free`
-                    : '⚠ No clean wax — using gold render/sketch';
-                setStep('grounding', 'done', auditMsg);
-            } else {
-                setStep('grounding', 'done', 'Grounding failed — using original image');
-            }
-        } catch (e) {
-            console.warn('Grounding failed:', e);
-            setStep('grounding', 'done', 'Skipped — using original image');
+        // This is MANDATORY — never skip, never fall back to original image
+        setStep('grounding', 'active', 'Step 1/3: Generating pencil sketch...');
+        const groundRes = await fetch('/api/grounding-pipeline', {
+            method: 'POST',
+            body: new URLSearchParams({ image_base64: imageB64 }),
+            signal: AbortSignal.timeout(300000), // 5 min timeout — pipeline generates 5+ images
+        });
+        if (!groundRes.ok) {
+            const errText = await groundRes.text().catch(() => 'Unknown error');
+            throw new Error(`Grounding pipeline failed: ${errText}`);
         }
+        const gData = await groundRes.json();
+
+        // Show wax views
+        if (gData.wax_views_base64 && gData.wax_views_base64.length > 0) {
+            showWaxViews(gData.wax_views_base64);
+        }
+
+        // Use audited best image for 3D — NEVER the original photo
+        const meshInputB64 = gData.best_for_3d_base64;
+        const auditMsg = gData.audit_passed
+            ? `✓ Audit passed — wax ${gData.best_wax_idx + 1} is stone-free`
+            : '⚠ Using gold render/sketch (no clean wax)';
+        setStep('grounding', 'done', auditMsg);
 
         // Step 3: 3D mesh — submit audited image to Hitem3D
         setStep('3d', 'active', 'Submitting audited image to 3D engine...');
