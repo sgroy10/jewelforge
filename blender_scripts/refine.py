@@ -321,22 +321,19 @@ def main():
     # Step 2: Center origin
     center_origin(obj)
 
-    # Step 3: Clean mesh
+    # Step 3: Light cleanup — fix doubles, holes, normals
     clean_mesh(obj)
 
-    # Step 4: Voxel remesh
-    voxel_remesh(obj, voxel_size=0.15)
+    # NO voxel remesh — it destroys prong tips and stone seat detail
+    # NO subdivision — Hitem3D 2M faces already has enough detail
 
-    # Step 5: Subdivide
-    subdivide(obj, levels=1)
-
-    # Step 6: Sharp edges
+    # Step 4: Sharp edges — preserve prong/seat crispness
     sharpen_edges(obj, angle_threshold_deg=30)
 
-    # Step 7: Weighted normals
+    # Step 5: Weighted normals — smooth curves, sharp edges
     apply_weighted_normals(obj)
 
-    # Step 8: Decimate if needed
+    # Step 6: Decimate to manageable size (shape-preserving collapse)
     decimate_if_needed(obj, target_faces=200000)
 
     # Final stats
