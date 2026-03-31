@@ -733,14 +733,13 @@ async def refine_mesh(
     glb_url: str = Form(None),
     glb_base64: str = Form(None),
 ):
-    """Refine a GLB mesh using Blender. Returns file URLs (not base64) to avoid huge responses."""
+    """Refine a GLB mesh using Blender. Returns both file URLs and base64."""
     job_id = str(uuid.uuid4())[:8]
     input_glb = str(TEMP_DIR / f"{job_id}_input.glb")
     output_stl = str(TEMP_DIR / f"{job_id}_output.stl")
     output_glb = str(TEMP_DIR / f"{job_id}_output.glb")
 
     try:
-        # Download or decode the GLB
         if glb_url:
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.get(glb_url)
@@ -753,21 +752,24 @@ async def refine_mesh(
         else:
             raise HTTPException(status_code=400, detail="Provide glb_url or glb_base64")
 
-        # Run Blender
         stats = run_blender_refine(input_glb, output_stl, output_glb)
 
         base_url = str(request.base_url).rstrip("/")
         result = {"success": True, "refined": True, "stats": stats}
 
-        # Return file URLs instead of base64 — avoids 20MB+ JSON responses
+        # Provide both URLs (for model-viewer) and base64 (for download)
         if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
+            stl_size = os.path.getsize(output_stl)
             result["stl_url"] = f"{base_url}/api/files/{job_id}_output.stl"
-            print(f"JewelForge: STL size={os.path.getsize(output_stl)} bytes")
-        if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
-            result["glb_url"] = f"{base_url}/api/files/{job_id}_output.glb"
-            print(f"JewelForge: GLB size={os.path.getsize(output_glb)} bytes")
+            result["stl_base64"] = base64.b64encode(open(output_stl, "rb").read()).decode()
+            print(f"JewelForge: STL size={stl_size} bytes")
 
-        # Clean up input only — keep outputs for serving
+        if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
+            glb_size = os.path.getsize(output_glb)
+            result["glb_url"] = f"{base_url}/api/files/{job_id}_output.glb"
+            result["glb_base64"] = base64.b64encode(open(output_glb, "rb").read()).decode()
+            print(f"JewelForge: GLB size={glb_size} bytes")
+
         try:
             os.remove(input_glb)
         except OSError:
