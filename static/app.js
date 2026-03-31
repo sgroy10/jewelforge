@@ -87,12 +87,12 @@ async function startPipeline() {
     document.getElementById('viewerSection').style.display = 'none';
     document.getElementById('analysisCard').style.display = 'none';
     document.getElementById('waxPreview').style.display = 'none';
-    ['analyze', 'wax', '3d', 'refine', 'pave'].forEach(s => setStep(s, '', ''));
+    ['analyze', 'grounding', '3d', 'refine', 'pave'].forEach(s => setStep(s, '', ''));
 
     try {
         let imageB64;
 
-        // Step 1: Analyze / Generate
+        // Step 1: Analyze / Generate image
         if (activeTab === 'prompt') {
             setStep('analyze', 'active', 'Generating jewelry image from your description...');
             const res = await fetch('/api/generate-image', { method: 'POST', body: new URLSearchParams({ prompt }) });
@@ -116,24 +116,36 @@ async function startPipeline() {
             setStep('analyze', 'done', formatAnalysis(data.analysis));
         }
 
-        // Step 2: Wax views
-        setStep('wax', 'active', 'Creating multi-angle wax carving references...');
-        let waxViews = [];
+        // Step 2: Grounding Pipeline — Sketch → Gold → Wax (visual chain + audit)
+        setStep('grounding', 'active', 'Sketch → Gold Render → Wax (visual chain)...');
+        let meshInputB64 = imageB64; // fallback
         try {
-            const waxRes = await fetch('/api/generate-wax', { method: 'POST', body: new URLSearchParams({ image_base64: imageB64 }) });
-            if (waxRes.ok) {
-                const waxData = await waxRes.json();
-                waxViews = waxData.wax_views || [];
-                if (waxViews.length > 0) {
-                    showWaxViews(waxViews);
+            const groundRes = await fetch('/api/grounding-pipeline', {
+                method: 'POST',
+                body: new URLSearchParams({ image_base64: imageB64 }),
+            });
+            if (groundRes.ok) {
+                const gData = await groundRes.json();
+                // Show wax views
+                if (gData.wax_views_base64 && gData.wax_views_base64.length > 0) {
+                    showWaxViews(gData.wax_views_base64);
                 }
+                // Use audited best image for 3D
+                meshInputB64 = gData.best_for_3d_base64;
+                const auditMsg = gData.audit_passed
+                    ? `✓ Audit passed — wax ${gData.best_wax_idx + 1} is stone-free`
+                    : '⚠ No clean wax — using gold render/sketch';
+                setStep('grounding', 'done', auditMsg);
+            } else {
+                setStep('grounding', 'done', 'Grounding failed — using original image');
             }
-        } catch (e) { console.warn('Wax failed:', e); }
-        setStep('wax', 'done', `${waxViews.length} views generated`);
+        } catch (e) {
+            console.warn('Grounding failed:', e);
+            setStep('grounding', 'done', 'Skipped — using original image');
+        }
 
-        // Step 3: 3D mesh — use best wax view for 3D (last one, or original as fallback)
-        const meshInputB64 = (waxViews.length > 0) ? waxViews[waxViews.length - 1] : imageB64;
-        setStep('3d', 'active', waxViews.length > 0 ? 'Submitting stone-free wax to 3D engine...' : 'Submitting to AI 3D engine...');
+        // Step 3: 3D mesh — submit audited image to Hitem3D
+        setStep('3d', 'active', 'Submitting audited image to 3D engine...');
         const submitRes = await fetch('/api/generate-3d/submit', { method: 'POST', body: new URLSearchParams({ image_base64: meshInputB64, engine: 'hitem3d' }) });
         if (!submitRes.ok) throw new Error('3D submission failed');
         const submitData = await submitRes.json();

@@ -257,56 +257,160 @@ async def gemini_analyze_jewelry(image_bytes: bytes) -> dict:
             return {"description": text, "category": "other"}
 
 
+# ──────────────────────────────────────────────
+# JewelCraft Grounding Pattern — Visual Context Chain
+# Each step sees the PREVIOUS step's output image.
+# Photo → Pencil Sketch → Gold Render → Wax Views
+# ──────────────────────────────────────────────
+
+async def _gemini_image_transform(client: httpx.AsyncClient, input_image_b64: str, prompt: str) -> bytes:
+    """Core helper: send image + prompt to Gemini, get image back."""
+    resp = await client.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={GEMINI_API_KEY}",
+        json={
+            "contents": [{"parts": [
+                {"inlineData": {"mimeType": "image/png", "data": input_image_b64}},
+                {"text": prompt},
+            ]}],
+            "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+        },
+    )
+    data = resp.json()
+    if "error" in data:
+        raise Exception(f"Gemini error: {data['error'].get('message', data['error'])}")
+    for candidate in data.get("candidates", []):
+        for part in candidate.get("content", {}).get("parts", []):
+            if "inlineData" in part:
+                return base64.b64decode(part["inlineData"]["data"])
+    raise Exception("Gemini did not return an image")
+
+
+async def _gemini_audit_stones(client: httpx.AsyncClient, image_b64: str) -> bool:
+    """Audit: does this image contain visible stones/gems? Returns True if CLEAN (no stones)."""
+    resp = await client.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
+        json={
+            "contents": [{"parts": [
+                {"inlineData": {"mimeType": "image/png", "data": image_b64}},
+                {"text": (
+                    "Look at this jewelry image carefully. "
+                    "Are there ANY visible stones, diamonds, gems, or crystals in this image? "
+                    "Answer with ONLY the word 'CLEAN' if there are NO stones/gems visible, "
+                    "or 'STONES' if there ARE stones/gems visible. One word only."
+                )},
+            ]}],
+        },
+    )
+    data = resp.json()
+    text = ""
+    for candidate in data.get("candidates", []):
+        for part in candidate.get("content", {}).get("parts", []):
+            if "text" in part:
+                text += part["text"]
+    result = text.strip().upper()
+    is_clean = "CLEAN" in result
+    print(f"JewelForge: Audit result = '{result}' → {'PASS' if is_clean else 'FAIL'}")
+    return is_clean
+
+
+async def grounding_pipeline(image_bytes: bytes, analysis: dict) -> dict:
+    """JewelCraft Grounding Pattern: Photo → Sketch → Gold → Wax with visual chain.
+
+    Each step feeds its output image to the next step.
+    Audit inspector checks each stage for stone removal.
+    Returns dict with all stage images and the final clean wax for Hitem3D.
+    """
+    input_b64 = base64.b64encode(image_bytes).decode()
+    jewelry_type = analysis.get("type", "jewelry")
+    description = analysis.get("description", "")
+
+    async with httpx.AsyncClient(timeout=180) as client:
+
+        # ─── Stage 1: Pencil Sketch ─────────────────
+        print("JewelForge: [STAGE 1] Generating pencil sketch...")
+        sketch_bytes = await _gemini_image_transform(client, input_b64, (
+            f"Create a detailed pencil sketch / line drawing of this {jewelry_type}. "
+            f"Show ONLY the metal framework structure — outlines of the band, prongs, settings, bezels. "
+            f"DO NOT draw any stones, diamonds, or gems. Where stones exist, draw empty circular outlines "
+            f"showing the empty seat/cup. Clean white background, precise technical drawing style. "
+            f"Think jewelry CAD wireframe — just the metal skeleton, no stones."
+        ))
+        sketch_b64 = base64.b64encode(sketch_bytes).decode()
+        print(f"JewelForge: [STAGE 1] Pencil sketch done ({len(sketch_bytes)} bytes)")
+
+        # ─── Stage 2: Gold Render (from sketch) ─────
+        print("JewelForge: [STAGE 2] Generating gold render from sketch...")
+        gold_bytes = await _gemini_image_transform(client, sketch_b64, (
+            f"Transform this pencil sketch into a photorealistic 18K polished gold render. "
+            f"This is a {jewelry_type}. Render it as solid polished gold metal — NO stones, NO diamonds, NO gems. "
+            f"Where the sketch shows empty circular outlines, render them as smooth concave cups in the gold. "
+            f"The prongs should be clean sharp gold fingers pointing up, with empty space where stones would go. "
+            f"Studio lighting, white background, professional product photography. "
+            f"Pure gold metal only — the kind of piece you'd see BEFORE a stone setter adds the diamonds."
+        ))
+        gold_b64 = base64.b64encode(gold_bytes).decode()
+        print(f"JewelForge: [STAGE 2] Gold render done ({len(gold_bytes)} bytes)")
+
+        # ─── Stage 3: Wax Views (from gold render) ──
+        print("JewelForge: [STAGE 3] Generating wax views from gold render...")
+        wax_views = []
+        view_angles = [
+            "front view straight on",
+            "left side view at 90 degrees",
+            "three-quarter angle view from slightly above and to the right",
+        ]
+
+        for i, angle in enumerate(view_angles):
+            # Each wax view is generated from the GOLD render (not original photo)
+            wax_bytes = await _gemini_image_transform(client, gold_b64, (
+                f"Transform this gold jewelry render into a uniform blue wax carving model, {angle}. "
+                f"Uniform solid matte blue color (#3A7BC8). Smooth surface like polished wax. "
+                f"Keep the EXACT same metal structure — no changes to shape, just change material to blue wax. "
+                f"NO stones, NO gems (there should be none in the gold render either). "
+                f"Clean empty cups where stones will be set. Sharp clean prongs. "
+                f"Dark background. Soft ambient occlusion lighting. Professional quality."
+            ))
+            wax_views.append(wax_bytes)
+            print(f"JewelForge: [STAGE 3] Wax view {i+1}/3 done ({len(wax_bytes)} bytes)")
+
+        # ─── Stage 4: Audit — check wax views for stones ──
+        print("JewelForge: [AUDIT] Checking wax views for stone contamination...")
+        best_wax_idx = -1
+        for i, wv in enumerate(wax_views):
+            wv_b64 = base64.b64encode(wv).decode()
+            is_clean = await _gemini_audit_stones(client, wv_b64)
+            print(f"JewelForge: [AUDIT] Wax view {i+1}: {'CLEAN ✓' if is_clean else 'HAS STONES ✗'}")
+            if is_clean and best_wax_idx == -1:
+                best_wax_idx = i
+
+        # If no wax passed audit, use gold render directly (it's usually cleaner)
+        if best_wax_idx == -1:
+            print("JewelForge: [AUDIT] No clean wax found — checking gold render...")
+            is_gold_clean = await _gemini_audit_stones(client, gold_b64)
+            if is_gold_clean:
+                print("JewelForge: [AUDIT] Gold render is clean — using it for 3D")
+                best_image = gold_bytes
+            else:
+                print("JewelForge: [AUDIT] Gold render also has stones — using sketch for 3D")
+                best_image = sketch_bytes
+        else:
+            print(f"JewelForge: [AUDIT] Using wax view {best_wax_idx + 1} for 3D generation")
+            best_image = wax_views[best_wax_idx]
+
+    return {
+        "sketch": sketch_bytes,
+        "gold_render": gold_bytes,
+        "wax_views": wax_views,
+        "best_for_3d": best_image,
+        "best_wax_idx": best_wax_idx,
+        "audit_passed": best_wax_idx >= 0,
+    }
+
+
 async def gemini_generate_wax_views(image_bytes: bytes, analysis: dict) -> list[bytes]:
-    """Generate blue wax carving views from jewelry image."""
-    b64 = base64.b64encode(image_bytes).decode()
-    views = []
-    view_angles = ["front view straight on", "left side view at 90 degrees", "three-quarter angle view showing the ring from slightly above and to the right"]
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        for angle in view_angles:
-            resp = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key={GEMINI_API_KEY}",
-                json={
-                    "contents": [
-                        {
-                            "parts": [
-                                {
-                                    "inlineData": {
-                                        "mimeType": "image/png",
-                                        "data": b64,
-                                    }
-                                },
-                                {
-                                    "text": (
-                                        f"Create a smooth blue wax carving of this jewelry's METAL STRUCTURE ONLY, {angle}. "
-                                        f"ABSOLUTELY NO stones, NO diamonds, NO gems, NO crystals, NO spikes, NO sharp protrusions. "
-                                        f"Where stones exist in the original, show SMOOTH ROUND EMPTY CUPS (concave depressions) in the wax. "
-                                        f"The surface must be SMOOTH and CLEAN — like a polished wax casting pattern. "
-                                        f"Uniform solid blue color (#3A7BC8). Soft ambient occlusion lighting. "
-                                        f"NO texture, NO bumps, NO sparkle — just smooth matte blue wax. "
-                                        f"Clean dark background. "
-                                        f"This is a {analysis.get('type', 'jewelry')}. "
-                                        f"Imagine a jeweler carved this from a block of blue wax — perfectly smooth, "
-                                        f"with clean round cavities where each stone will later be placed by hand."
-                                    )
-                                },
-                            ]
-                        }
-                    ],
-                    "generationConfig": {
-                        "responseModalities": ["TEXT", "IMAGE"],
-                    },
-                },
-            )
-            data = resp.json()
-            for candidate in data.get("candidates", []):
-                for part in candidate.get("content", {}).get("parts", []):
-                    if "inlineData" in part:
-                        views.append(base64.b64decode(part["inlineData"]["data"]))
-                        break
-
-    return views
+    """Legacy wrapper — runs grounding pipeline, returns wax views."""
+    result = await grounding_pipeline(image_bytes, analysis)
+    return result["wax_views"]
 
 
 # ──────────────────────────────────────────────
@@ -498,12 +602,36 @@ async def generate_image(prompt: str = Form(...)):
 
 @app.post("/api/generate-wax")
 async def generate_wax(image_base64: str = Form(...)):
-    """Generate blue wax views from jewelry image."""
+    """Legacy: Generate blue wax views from jewelry image."""
     image_bytes = base64.b64decode(image_base64)
     analysis = await gemini_analyze_jewelry(image_bytes)
     wax_views = await gemini_generate_wax_views(image_bytes, analysis)
     wax_b64 = [base64.b64encode(w).decode() for w in wax_views]
     return {"wax_views": wax_b64, "analysis": analysis}
+
+
+@app.post("/api/grounding-pipeline")
+async def grounding_pipeline_endpoint(image_base64: str = Form(...)):
+    """JewelCraft Grounding Pattern: Photo → Sketch → Gold → Wax.
+
+    Visual context chain — each step sees the previous step's output.
+    Includes audit inspector to verify stone removal.
+    Returns all stages + the best clean image for Hitem3D.
+    """
+    image_bytes = base64.b64decode(image_base64)
+    analysis = await gemini_analyze_jewelry(image_bytes)
+    result = await grounding_pipeline(image_bytes, analysis)
+
+    response = {
+        "analysis": analysis,
+        "sketch_base64": base64.b64encode(result["sketch"]).decode(),
+        "gold_render_base64": base64.b64encode(result["gold_render"]).decode(),
+        "wax_views_base64": [base64.b64encode(w).decode() for w in result["wax_views"]],
+        "best_for_3d_base64": base64.b64encode(result["best_for_3d"]).decode(),
+        "best_wax_idx": result["best_wax_idx"],
+        "audit_passed": result["audit_passed"],
+    }
+    return response
 
 
 @app.post("/api/generate-3d")
