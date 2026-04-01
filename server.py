@@ -757,17 +757,15 @@ async def refine_mesh(
         base_url = str(request.base_url).rstrip("/")
         result = {"success": True, "refined": True, "stats": stats}
 
-        # Provide both URLs (for model-viewer) and base64 (for download)
+        # Return file URLs only — NO base64 (16MB GLB as base64 = 22MB JSON = browser crash)
         if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
             stl_size = os.path.getsize(output_stl)
             result["stl_url"] = f"{base_url}/api/files/{job_id}_output.stl"
-            result["stl_base64"] = base64.b64encode(open(output_stl, "rb").read()).decode()
             print(f"JewelForge: STL size={stl_size} bytes")
 
         if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
             glb_size = os.path.getsize(output_glb)
             result["glb_url"] = f"{base_url}/api/files/{job_id}_output.glb"
-            result["glb_base64"] = base64.b64encode(open(output_glb, "rb").read()).decode()
             print(f"JewelForge: GLB size={glb_size} bytes")
 
         try:
