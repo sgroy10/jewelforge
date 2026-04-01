@@ -757,20 +757,33 @@ async def refine_mesh(
         base_url = str(request.base_url).rstrip("/")
         result = {"success": True, "refined": True, "stats": stats}
 
-        # GLB as base64 for model-viewer (needed inline — temp files vanish on restart)
-        # STL as URL for download (larger, streamed on demand)
+        # Copy outputs to persistent /app/outputs/ (survives within container lifetime)
+        outputs_dir = Path("/app/outputs") if Path("/app").exists() else TEMP_DIR / "outputs"
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+
+        # GLB — inline base64 for model-viewer + persistent file URL as backup
         if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
             glb_size = os.path.getsize(output_glb)
+            # Copy to persistent path
+            import shutil
+            persist_glb = str(outputs_dir / f"{job_id}.glb")
+            shutil.copy2(output_glb, persist_glb)
             result["glb_base64"] = base64.b64encode(open(output_glb, "rb").read()).decode()
-            print(f"JewelForge: GLB size={glb_size} bytes, base64={len(result['glb_base64'])} chars")
+            result["glb_download_url"] = f"{base_url}/api/files/{job_id}.glb"
+            result["glb_download_path"] = persist_glb
+            print(f"JewelForge: GLB size={glb_size} bytes → {persist_glb}")
 
+        # STL — inline base64 for download + persistent file URL
         if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
             stl_size = os.path.getsize(output_stl)
-            result["stl_url"] = f"{base_url}/api/files/{job_id}_output.stl"
-            # Also include base64 for reliable download
+            persist_stl = str(outputs_dir / f"{job_id}.stl")
+            shutil.copy2(output_stl, persist_stl)
             result["stl_base64"] = base64.b64encode(open(output_stl, "rb").read()).decode()
-            print(f"JewelForge: STL size={stl_size} bytes")
+            result["stl_download_url"] = f"{base_url}/api/files/{job_id}.stl"
+            result["stl_download_path"] = persist_stl
+            print(f"JewelForge: STL size={stl_size} bytes → {persist_stl}")
 
+        # Clean up temp input
         try:
             os.remove(input_glb)
         except OSError:
@@ -1064,8 +1077,11 @@ async def pave_cleanup(
 # Serve refined files from temp dir
 @app.get("/api/files/{filename}")
 async def serve_file(filename: str):
-    """Serve temp files (STL/GLB) by job ID."""
-    filepath = TEMP_DIR / filename
+    """Serve output files (STL/GLB). Checks persistent outputs/ then temp dir."""
+    outputs_dir = Path("/app/outputs") if Path("/app").exists() else TEMP_DIR / "outputs"
+    filepath = outputs_dir / filename
+    if not filepath.exists():
+        filepath = TEMP_DIR / filename
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found")
     media = "model/gltf-binary" if filename.endswith(".glb") else "application/octet-stream"

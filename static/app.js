@@ -193,8 +193,20 @@ async function startPipeline() {
         currentSTLUrl = refineData.stl_url || null;
         currentGLBUrl = refineData.glb_url || null;
 
-        // Show viewer using GLB URL directly
+        // Show viewer
         showViewer(refineData);
+
+        // Show download links below viewer as fallback
+        if (refineData.glb_download_url || refineData.stl_download_url) {
+            const linksDiv = document.getElementById('downloadLinks');
+            if (linksDiv) {
+                let html = '<strong>Direct download links:</strong><br>';
+                if (refineData.glb_download_url) html += `<a href="${refineData.glb_download_url}" download>GLB File</a> `;
+                if (refineData.stl_download_url) html += `<a href="${refineData.stl_download_url}" download>STL File</a>`;
+                linksDiv.innerHTML = html;
+                linksDiv.style.display = 'block';
+            }
+        }
 
     } catch (error) {
         console.error('Pipeline error:', error);
