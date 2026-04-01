@@ -333,7 +333,7 @@ def main():
     # Step 5: Weighted normals — smooth curves, sharp edges
     apply_weighted_normals(obj)
 
-    # Step 6: Decimate to keep GLB under 5MB for browser JSON response
+    # Step 6: Decimate to manageable size (shape-preserving collapse)
     decimate_if_needed(obj, target_faces=50000)
 
     # Final stats

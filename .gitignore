@@ -1,2 +1,5 @@
 test_model_url.txt
 test_image_b64.txt
+*.glb
+*.png
+latest_*

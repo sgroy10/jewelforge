@@ -7,8 +7,7 @@
 let currentImageB64 = null;
 let currentSTLB64 = null;
 let currentGLBB64 = null;
-let currentGLBUrl = null; // URL for model-viewer (file URL or blob URL)
-let currentSTLUrl = null; // URL for STL download
+let currentGLBUrl = null; // blob URL for model-viewer
 let currentAnalysis = null;
 
 // ─── Tab Switching ──────────────────────────────
@@ -118,30 +117,32 @@ async function startPipeline() {
         }
 
         // Step 2: Grounding Pipeline — Sketch → Gold → Wax (visual chain + audit)
-        // This is MANDATORY — never skip, never fall back to original image
-        setStep('grounding', 'active', 'Step 1/3: Generating pencil sketch...');
-        const groundRes = await fetch('/api/grounding-pipeline', {
-            method: 'POST',
-            body: new URLSearchParams({ image_base64: imageB64 }),
-            signal: AbortSignal.timeout(300000), // 5 min timeout — pipeline generates 5+ images
-        });
-        if (!groundRes.ok) {
-            const errText = await groundRes.text().catch(() => 'Unknown error');
-            throw new Error(`Grounding pipeline failed: ${errText}`);
+        setStep('grounding', 'active', 'Sketch → Gold Render → Wax (visual chain)...');
+        let meshInputB64 = imageB64; // fallback
+        try {
+            const groundRes = await fetch('/api/grounding-pipeline', {
+                method: 'POST',
+                body: new URLSearchParams({ image_base64: imageB64 }),
+            });
+            if (groundRes.ok) {
+                const gData = await groundRes.json();
+                // Show wax views
+                if (gData.wax_views_base64 && gData.wax_views_base64.length > 0) {
+                    showWaxViews(gData.wax_views_base64);
+                }
+                // Use audited best image for 3D
+                meshInputB64 = gData.best_for_3d_base64;
+                const auditMsg = gData.audit_passed
+                    ? `✓ Audit passed — wax ${gData.best_wax_idx + 1} is stone-free`
+                    : '⚠ No clean wax — using gold render/sketch';
+                setStep('grounding', 'done', auditMsg);
+            } else {
+                setStep('grounding', 'done', 'Grounding failed — using original image');
+            }
+        } catch (e) {
+            console.warn('Grounding failed:', e);
+            setStep('grounding', 'done', 'Skipped — using original image');
         }
-        const gData = await groundRes.json();
-
-        // Show wax views
-        if (gData.wax_views_base64 && gData.wax_views_base64.length > 0) {
-            showWaxViews(gData.wax_views_base64);
-        }
-
-        // Use audited best image for 3D — NEVER the original photo
-        const meshInputB64 = gData.best_for_3d_base64;
-        const auditMsg = gData.audit_passed
-            ? `✓ Audit passed — wax ${gData.best_wax_idx + 1} is stone-free`
-            : '⚠ Using gold render/sketch (no clean wax)';
-        setStep('grounding', 'done', auditMsg);
 
         // Step 3: 3D mesh — submit audited image to Hitem3D
         setStep('3d', 'active', 'Submitting audited image to 3D engine...');
@@ -179,34 +180,23 @@ async function startPipeline() {
         if (!meshData) throw new Error('3D generation timed out (15 min)');
         setStep('3d', 'done', `Engine: ${meshData.engine}`);
 
-        // Step 4: Refine (scale + cleanup) — returns file URLs not base64
+        // Step 4: Refine (scale + cleanup)
         setStep('refine', 'active', 'Scaling to real mm & cleaning mesh...');
         const refineRes = await fetch('/api/refine', { method: 'POST', body: new URLSearchParams({ glb_url: meshData.url }) });
         if (!refineRes.ok) throw new Error('Mesh refinement failed');
         const refineData = await refineRes.json();
         setStep('refine', 'done', refineData.refined ? 'Scaled & cleaned' : 'Raw AI mesh');
 
-        // Step 5: Done
-        setStep('pave', 'done', 'Complete');
+        let finalData = refineData;
 
-        // Store URLs for download
-        currentSTLUrl = refineData.stl_url || null;
-        currentGLBUrl = refineData.glb_url || null;
+        // Step 5: Pave cleanup — DISABLED (auto-detection unreliable on AI meshes)
+        setStep('pave', 'done', 'Skipped — using Hitem3D mesh directly');
+
+        currentSTLB64 = finalData.stl_base64 || refineData.stl_base64 || null;
+        currentGLBB64 = finalData.glb_base64 || refineData.glb_base64 || null;
 
         // Show viewer
-        showViewer(refineData);
-
-        // Show download links below viewer as fallback
-        if (refineData.glb_download_url || refineData.stl_download_url) {
-            const linksDiv = document.getElementById('downloadLinks');
-            if (linksDiv) {
-                let html = '<strong>Direct download links:</strong><br>';
-                if (refineData.glb_download_url) html += `<a href="${refineData.glb_download_url}" download>GLB File</a> `;
-                if (refineData.stl_download_url) html += `<a href="${refineData.stl_download_url}" download>STL File</a>`;
-                linksDiv.innerHTML = html;
-                linksDiv.style.display = 'block';
-            }
-        }
+        showViewer(finalData.stats ? finalData : refineData);
 
     } catch (error) {
         console.error('Pipeline error:', error);
@@ -280,21 +270,18 @@ function showViewer(data) {
     }
     document.getElementById('statEngine').textContent = data.engine || '—';
 
-    // Get GLB — prefer URL (lightweight), fall back to base64
-    let viewerSrc = null;
-    if (data.glb_url) {
-        viewerSrc = data.glb_url;
-        currentGLBUrl = data.glb_url;
-    } else if (data.glb_base64) {
-        if (currentGLBUrl && currentGLBUrl.startsWith('blob:')) {
-            URL.revokeObjectURL(currentGLBUrl);
-        }
-        viewerSrc = base64ToBlobUrl(data.glb_base64, 'model/gltf-binary');
-        currentGLBUrl = viewerSrc;
-    } else {
+    // Get GLB data — prefer refined GLB, fall back to raw
+    const glbB64 = data.glb_base64;
+    if (!glbB64) {
         console.error('No GLB data for viewer');
         return;
     }
+
+    // Revoke previous blob URL
+    if (currentGLBUrl) {
+        URL.revokeObjectURL(currentGLBUrl);
+    }
+    currentGLBUrl = base64ToBlobUrl(glbB64, 'model/gltf-binary');
 
     // Get or create model-viewer element
     const wrap = document.getElementById('viewerWrap');
@@ -320,12 +307,12 @@ function showViewer(data) {
         wrap.appendChild(mv);
     }
 
-    mv.setAttribute('src', viewerSrc);
+    mv.setAttribute('src', currentGLBUrl);
 
     // Update download button
     const dlBtn = document.getElementById('btnDownload');
     if (dlBtn) {
-        dlBtn.querySelector('.dl-text').textContent = (currentSTLUrl || currentSTLB64) ? 'Download STL' : 'Download GLB';
+        dlBtn.querySelector('.dl-text').textContent = currentSTLB64 ? 'Download STL' : 'Download GLB';
     }
 
     document.getElementById('viewerSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -358,29 +345,19 @@ function resetCamera() {
 }
 
 function downloadModel() {
-    // Prefer URL-based download (no base64 decoding needed)
-    const url = currentSTLUrl || currentGLBUrl;
-    const ext = currentSTLUrl ? 'stl' : 'glb';
-    if (!url) {
-        // Fallback to base64 if available
-        const data = currentSTLB64 || currentGLBB64;
-        if (!data) { alert('No model available yet.'); return; }
-        const bytes = atob(data);
-        const buffer = new Uint8Array(bytes.length);
-        for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
-        const blob = new Blob([buffer], { type: 'application/octet-stream' });
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = `jewelforge_${Date.now()}.${ext}`;
-        a.click();
-        URL.revokeObjectURL(blobUrl);
-        return;
-    }
+    const data = currentSTLB64 || currentGLBB64;
+    const ext = currentSTLB64 ? 'stl' : 'glb';
+    if (!data) { alert('No model available yet.'); return; }
+    const bytes = atob(data);
+    const buffer = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
+    const blob = new Blob([buffer], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `jewelforge_${Date.now()}.${ext}`;
     a.click();
+    URL.revokeObjectURL(url);
 }
 
 // ─── Expose to HTML onclick handlers ────────────
