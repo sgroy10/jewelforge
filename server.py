@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
+import psycopg2
 
 app = FastAPI(title="JewelForge", version="1.0.0")
 
@@ -38,6 +39,90 @@ JEWELFORGE_API_KEY = os.environ.get("JEWELFORGE_API_KEY", "")
 
 TEMP_DIR = Path(tempfile.gettempdir()) / "jewelforge"
 TEMP_DIR.mkdir(exist_ok=True)
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+
+# ──────────────────────────────────────────────
+# PostgreSQL — store GLB/STL files permanently
+# ──────────────────────────────────────────────
+def db_init():
+    """Create outputs table if it doesn't exist."""
+    if not DATABASE_URL:
+        print("JewelForge: No DATABASE_URL — file storage disabled")
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS outputs (
+                id TEXT PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT NOW(),
+                glb_data BYTEA,
+                stl_data BYTEA,
+                stats JSONB,
+                glb_size INTEGER,
+                stl_size INTEGER
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("JewelForge: Database ready — outputs table initialized")
+    except Exception as e:
+        print(f"JewelForge: Database init failed — {e}")
+
+
+def db_store(job_id: str, glb_bytes: bytes = None, stl_bytes: bytes = None, stats: dict = None):
+    """Store GLB/STL in PostgreSQL."""
+    if not DATABASE_URL:
+        return False
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO outputs (id, glb_data, stl_data, stats, glb_size, stl_size)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               ON CONFLICT (id) DO UPDATE SET
+               glb_data = EXCLUDED.glb_data, stl_data = EXCLUDED.stl_data,
+               stats = EXCLUDED.stats, glb_size = EXCLUDED.glb_size, stl_size = EXCLUDED.stl_size""",
+            (job_id,
+             psycopg2.Binary(glb_bytes) if glb_bytes else None,
+             psycopg2.Binary(stl_bytes) if stl_bytes else None,
+             json.dumps(stats) if stats else None,
+             len(glb_bytes) if glb_bytes else 0,
+             len(stl_bytes) if stl_bytes else 0)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"JewelForge: Stored {job_id} in database (GLB={len(glb_bytes) if glb_bytes else 0}, STL={len(stl_bytes) if stl_bytes else 0})")
+        return True
+    except Exception as e:
+        print(f"JewelForge: Database store failed — {e}")
+        return False
+
+
+def db_fetch(job_id: str, file_type: str = "glb") -> bytes:
+    """Fetch GLB or STL from PostgreSQL."""
+    if not DATABASE_URL:
+        return None
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        col = "glb_data" if file_type == "glb" else "stl_data"
+        cur.execute(f"SELECT {col} FROM outputs WHERE id = %s", (job_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and row[0]:
+            return bytes(row[0])
+        return None
+    except Exception as e:
+        print(f"JewelForge: Database fetch failed — {e}")
+        return None
+
+
+db_init()
 
 # ──────────────────────────────────────────────
 # Hitem3D API
@@ -757,37 +842,24 @@ async def refine_mesh(
         base_url = str(request.base_url).rstrip("/")
         result = {"success": True, "refined": True, "stats": stats}
 
-        # Copy outputs to persistent /app/outputs/ (survives within container lifetime)
-        outputs_dir = Path("/app/outputs") if Path("/app").exists() else TEMP_DIR / "outputs"
-        outputs_dir.mkdir(parents=True, exist_ok=True)
+        # Read output files
+        glb_bytes = None
+        stl_bytes = None
 
-        # GLB — inline base64 for model-viewer + persistent file URL as backup
         if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
-            glb_size = os.path.getsize(output_glb)
-            # Copy to persistent path
-            import shutil
-            persist_glb = str(outputs_dir / f"{job_id}.glb")
-            shutil.copy2(output_glb, persist_glb)
-            result["glb_base64"] = base64.b64encode(open(output_glb, "rb").read()).decode()
+            glb_bytes = open(output_glb, "rb").read()
+            result["glb_base64"] = base64.b64encode(glb_bytes).decode()
             result["glb_download_url"] = f"{base_url}/api/files/{job_id}.glb"
-            result["glb_download_path"] = persist_glb
-            print(f"JewelForge: GLB size={glb_size} bytes → {persist_glb}")
+            print(f"JewelForge: GLB size={len(glb_bytes)} bytes")
 
-        # STL — inline base64 for download + persistent file URL
         if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
-            stl_size = os.path.getsize(output_stl)
-            persist_stl = str(outputs_dir / f"{job_id}.stl")
-            shutil.copy2(output_stl, persist_stl)
-            result["stl_base64"] = base64.b64encode(open(output_stl, "rb").read()).decode()
+            stl_bytes = open(output_stl, "rb").read()
+            result["stl_base64"] = base64.b64encode(stl_bytes).decode()
             result["stl_download_url"] = f"{base_url}/api/files/{job_id}.stl"
-            result["stl_download_path"] = persist_stl
-            print(f"JewelForge: STL size={stl_size} bytes → {persist_stl}")
+            print(f"JewelForge: STL size={len(stl_bytes)} bytes")
 
-        # Clean up temp input
-        try:
-            os.remove(input_glb)
-        except OSError:
-            pass
+        # Store in PostgreSQL — permanent, survives container restarts
+        db_store(job_id, glb_bytes=glb_bytes, stl_bytes=stl_bytes, stats=stats)
 
         return result
 
@@ -1077,15 +1149,25 @@ async def pave_cleanup(
 # Serve refined files from temp dir
 @app.get("/api/files/{filename}")
 async def serve_file(filename: str):
-    """Serve output files (STL/GLB). Checks persistent outputs/ then temp dir."""
-    outputs_dir = Path("/app/outputs") if Path("/app").exists() else TEMP_DIR / "outputs"
-    filepath = outputs_dir / filename
-    if not filepath.exists():
-        filepath = TEMP_DIR / filename
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    media = "model/gltf-binary" if filename.endswith(".glb") else "application/octet-stream"
-    return FileResponse(str(filepath), media_type=media, filename=filename)
+    """Serve output files. Checks temp dir first, then PostgreSQL."""
+    # Try temp dir first
+    filepath = TEMP_DIR / filename
+    if filepath.exists():
+        media = "model/gltf-binary" if filename.endswith(".glb") else "application/octet-stream"
+        return FileResponse(str(filepath), media_type=media, filename=filename)
+
+    # Try database — extract job_id from filename (e.g. "abc123.glb")
+    job_id = filename.rsplit(".", 1)[0] if "." in filename else filename
+    file_type = "glb" if filename.endswith(".glb") else "stl"
+    data = db_fetch(job_id, file_type)
+    if data:
+        media = "model/gltf-binary" if file_type == "glb" else "application/octet-stream"
+        from fastapi.responses import Response
+        return Response(content=data, media_type=media, headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        })
+
+    raise HTTPException(status_code=404, detail="File not found")
 
 
 # Serve static frontend
