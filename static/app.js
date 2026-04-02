@@ -117,7 +117,8 @@ async function startPipeline() {
 
         // Step 2: Grounding Pipeline — Sketch → Gold → Wax (visual chain + audit)
         setStep('grounding', 'active', 'Sketch → Gold Render → Wax (visual chain)...');
-        let meshInputB64 = imageB64; // fallback
+        let waxViews = []; // [front, left, right] base64 strings
+        let fallbackB64 = imageB64;
         try {
             const groundRes = await fetch('/api/grounding-pipeline', {
                 method: 'POST',
@@ -128,9 +129,9 @@ async function startPipeline() {
                 // Show wax views
                 if (gData.wax_views_base64 && gData.wax_views_base64.length > 0) {
                     showWaxViews(gData.wax_views_base64);
+                    waxViews = gData.wax_views_base64; // [front, left, right]
                 }
-                // Use audited best image for 3D
-                meshInputB64 = gData.best_for_3d_base64;
+                fallbackB64 = gData.best_for_3d_base64;
                 const auditMsg = gData.audit_passed
                     ? `✓ Audit passed — wax ${gData.best_wax_idx + 1} is stone-free`
                     : '⚠ No clean wax — using gold render/sketch';
@@ -143,9 +144,19 @@ async function startPipeline() {
             setStep('grounding', 'done', 'Skipped — using original image');
         }
 
-        // Step 3: 3D mesh — submit audited image to Hitem3D
-        setStep('3d', 'active', 'Submitting audited image to 3D engine...');
-        const submitRes = await fetch('/api/generate-3d/submit', { method: 'POST', body: new URLSearchParams({ image_base64: meshInputB64, engine: 'hitem3d' }) });
+        // Step 3: 3D mesh — submit multi-view wax images to Hitem3D
+        setStep('3d', 'active', 'Submitting multi-view images to 3D engine...');
+        const submitBody = new URLSearchParams({ engine: 'hitem3d' });
+        if (waxViews.length >= 3) {
+            // Multi-view: front, left, right
+            submitBody.set('view_front', waxViews[0]);
+            submitBody.set('view_left', waxViews[1]);
+            submitBody.set('view_right', waxViews[2]);
+        } else {
+            // Fallback to single image
+            submitBody.set('image_base64', fallbackB64);
+        }
+        const submitRes = await fetch('/api/generate-3d/submit', { method: 'POST', body: submitBody });
         if (!submitRes.ok) throw new Error('3D submission failed');
         const submitData = await submitRes.json();
         const taskId = submitData.task_id;
@@ -230,7 +241,7 @@ function formatAnalysis(a) { return `${a.type || 'jewelry'} — ${a.category || 
 function showWaxViews(views) {
     const grid = document.getElementById('waxGrid');
     grid.innerHTML = '';
-    ['Front', 'Side', 'Top'].forEach((label, i) => {
+    ['Front', 'Left', 'Right'].forEach((label, i) => {
         if (views[i]) {
             const img = document.createElement('img');
             img.src = `data:image/png;base64,${views[i]}`;

@@ -358,12 +358,14 @@ async def grounding_pipeline(image_bytes: bytes, analysis: dict) -> dict:
         print(f"JewelForge: [STAGE 2] Gold render done ({len(gold_bytes)} bytes)")
 
         # ─── Stage 3: Wax Views (from gold render) ──
+        # Hitem3D multi-view expects: front, back, left, right
+        # We generate front + left + right (3 views for best 3D reconstruction)
         print("JewelForge: [STAGE 3] Generating wax views from gold render...")
         wax_views = []
         view_angles = [
-            "front view straight on",
-            "left side view at 90 degrees",
-            "three-quarter angle view from slightly above and to the right",
+            "front view straight on, facing the camera directly",
+            "left side view at exactly 90 degrees from the front",
+            "right side view at exactly 90 degrees from the front (opposite of left)",
         ]
 
         for i, angle in enumerate(view_angles):
@@ -668,17 +670,41 @@ async def generate_3d(
 
 @app.post("/api/generate-3d/submit")
 async def generate_3d_submit(
-    image_base64: str = Form(...),
+    request: Request,
     engine: str = Form("hitem3d"),
 ):
-    """Submit 3D generation task. Returns task_id for polling. Non-blocking."""
-    image_bytes = base64.b64decode(image_base64)
+    """Submit 3D generation task. Accepts multi-view wax images for Hitem3D.
+
+    Form fields:
+        view_front (required): base64 front wax view
+        view_left (optional): base64 left side wax view
+        view_right (optional): base64 right side wax view
+        image_base64 (legacy fallback): single image base64
+    """
+    form = await request.form()
+
+    # Collect multi-view images (front is required)
+    views = []
+    view_names = ["front", "left", "right"]
+    for name in view_names:
+        b64 = form.get(f"view_{name}")
+        if b64:
+            views.append((name, base64.b64decode(b64)))
+
+    # Legacy fallback — single image
+    if not views:
+        single_b64 = form.get("image_base64")
+        if single_b64:
+            views.append(("front", base64.b64decode(single_b64)))
+
+    if not views:
+        raise HTTPException(status_code=400, detail="No images provided")
 
     if engine == "hitem3d" and HITEM3D_ACCESS_KEY:
         async with httpx.AsyncClient(timeout=300) as client:
             token = await hitem3d_get_token(client)
             headers = {"Authorization": f"Bearer {token}"}
-            files = {"images": ("jewelry.png", image_bytes, "image/png")}
+
             form_data = {
                 "request_type": "1",
                 "model": "hitem3dv2.0",
@@ -686,17 +712,43 @@ async def generate_3d_submit(
                 "face": "2000000",
                 "format": "2",
             }
+
+            if len(views) >= 2:
+                # Multi-view mode — front + left + right
+                # Hitem3D order: front, back, left, right
+                # multi_images_bit: front=1, back=0, left=?, right=?
+                ordered = {}
+                for name, data in views:
+                    ordered[name] = data
+
+                files = []
+                bit_str = ""
+                for slot in ["front", "back", "left", "right"]:
+                    if slot in ordered:
+                        files.append(("multi_images", (f"{slot}.png", ordered[slot], "image/png")))
+                        bit_str += "1"
+                    else:
+                        bit_str += "0"
+
+                form_data["multi_images_bit"] = bit_str
+                print(f"JewelForge: Hitem3D multi-view submit — {len(files)} views, bit={bit_str}")
+            else:
+                # Single view fallback
+                files = {"images": ("jewelry.png", views[0][1], "image/png")}
+                print("JewelForge: Hitem3D single-view submit")
+
             resp = await client.post(
                 "https://api.hitem3d.ai/open-api/v1/submit-task",
                 headers=headers, files=files, data=form_data,
             )
             result = resp.json()
-            print(f"JewelForge: Hitem3D submit: {result}")
+            print(f"JewelForge: Hitem3D submit response: {result}")
             if str(result.get("code")) != "200":
                 raise HTTPException(status_code=500, detail=f"Hitem3D submit failed: {result}")
             return {
                 "task_id": result["data"]["task_id"],
                 "engine": "hitem3d",
+                "views_sent": len(views) if isinstance(files, list) else 1,
                 "status": "submitted",
             }
 
