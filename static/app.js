@@ -5,9 +5,8 @@
 
 // ─── State ──────────────────────────────────────
 let currentImageB64 = null;
-let currentSTLB64 = null;
-let currentGLBB64 = null;
-let currentGLBUrl = null; // blob URL for model-viewer
+let currentSTLUrl = null;  // URL path for STL download
+let currentGLBUrl = null;  // URL path for GLB (model-viewer src)
 let currentAnalysis = null;
 
 // ─── Tab Switching ──────────────────────────────
@@ -192,8 +191,8 @@ async function startPipeline() {
         // Step 5: Pave cleanup — DISABLED (auto-detection unreliable on AI meshes)
         setStep('pave', 'done', 'Skipped — using Hitem3D mesh directly');
 
-        currentSTLB64 = finalData.stl_base64 || refineData.stl_base64 || null;
-        currentGLBB64 = finalData.glb_base64 || refineData.glb_base64 || null;
+        currentSTLUrl = finalData.stl_url || refineData.stl_url || null;
+        currentGLBUrl = finalData.glb_url || refineData.glb_url || null;
 
         // Show viewer
         showViewer(finalData.stats ? finalData : refineData);
@@ -244,22 +243,14 @@ function showWaxViews(views) {
 
 // ─── 3D Viewer (model-viewer) ──────────────────
 
-function base64ToBlobUrl(base64, mimeType) {
-    const binaryStr = atob(base64);
-    const bytes = new Uint8Array(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-    const blob = new Blob([bytes], { type: mimeType });
-    return URL.createObjectURL(blob);
-}
-
 function showViewer(data) {
     document.getElementById('viewerSection').style.display = 'block';
 
     // Stats
     if (data.stats && Object.keys(data.stats).length > 0) {
         const s = data.stats;
-        document.getElementById('statVerts').textContent = (s.output_vertices || s.input_vertices || 0).toLocaleString();
-        document.getElementById('statFaces').textContent = (s.output_faces || s.input_faces || 0).toLocaleString();
+        document.getElementById('statVerts').textContent = (s.vertices || s.output_vertices || 0).toLocaleString();
+        document.getElementById('statFaces').textContent = (s.faces || s.output_faces || 0).toLocaleString();
         document.getElementById('statWater').textContent = s.is_watertight ? '✓ Yes' : '✗ No';
         document.getElementById('statManifold').textContent = s.is_manifold ? '✓ Yes' : '✗ No';
         if (s.bounding_box_mm) {
@@ -270,18 +261,12 @@ function showViewer(data) {
     }
     document.getElementById('statEngine').textContent = data.engine || '—';
 
-    // Get GLB data — prefer refined GLB, fall back to raw
-    const glbB64 = data.glb_base64;
-    if (!glbB64) {
-        console.error('No GLB data for viewer');
+    // GLB URL — served by /api/files/
+    const glbUrl = data.glb_url;
+    if (!glbUrl) {
+        console.error('No GLB URL for viewer');
         return;
     }
-
-    // Revoke previous blob URL
-    if (currentGLBUrl) {
-        URL.revokeObjectURL(currentGLBUrl);
-    }
-    currentGLBUrl = base64ToBlobUrl(glbB64, 'model/gltf-binary');
 
     // Get or create model-viewer element
     const wrap = document.getElementById('viewerWrap');
@@ -302,17 +287,17 @@ function showViewer(data) {
         mv.setAttribute('tone-mapping', 'commerce');
         mv.setAttribute('interpolation-decay', '100');
         mv.style.cssText = 'width:100%;height:100%;display:block;outline:none;--poster-color:transparent;';
-        // Remove any existing content (old canvas, overlay)
         wrap.innerHTML = '';
         wrap.appendChild(mv);
     }
 
-    mv.setAttribute('src', currentGLBUrl);
+    // Point model-viewer directly at the server URL — no base64, no blob
+    mv.setAttribute('src', glbUrl);
 
     // Update download button
     const dlBtn = document.getElementById('btnDownload');
     if (dlBtn) {
-        dlBtn.querySelector('.dl-text').textContent = currentSTLB64 ? 'Download STL' : 'Download GLB';
+        dlBtn.querySelector('.dl-text').textContent = currentSTLUrl ? 'Download STL' : 'Download GLB';
     }
 
     document.getElementById('viewerSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -345,19 +330,13 @@ function resetCamera() {
 }
 
 function downloadModel() {
-    const data = currentSTLB64 || currentGLBB64;
-    const ext = currentSTLB64 ? 'stl' : 'glb';
-    if (!data) { alert('No model available yet.'); return; }
-    const bytes = atob(data);
-    const buffer = new Uint8Array(bytes.length);
-    for (let i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
-    const blob = new Blob([buffer], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
+    const url = currentSTLUrl || currentGLBUrl;
+    const ext = currentSTLUrl ? 'stl' : 'glb';
+    if (!url) { alert('No model available yet.'); return; }
     const a = document.createElement('a');
     a.href = url;
     a.download = `jewelforge_${Date.now()}.${ext}`;
     a.click();
-    URL.revokeObjectURL(url);
 }
 
 // ─── Expose to HTML onclick handlers ────────────
