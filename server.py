@@ -830,27 +830,33 @@ async def scale_and_repair(
             height_mm=height_mm,
         )
 
+        # Save outputs as files and return URLs (same pattern as /api/refine)
         result = {"success": True, "refined": True, "stats": stats}
 
         if os.path.exists(output_stl):
-            stl_data = open(output_stl, "rb").read()
-            if len(stl_data) > 84:
-                result["stl_base64"] = base64.b64encode(stl_data).decode()
-                print(f"JewelForge: STL size={len(stl_data)} bytes")
+            stl_size = os.path.getsize(output_stl)
+            if stl_size > 84:
+                persist_stl = str(TEMP_DIR / f"{job_id}_final.stl")
+                os.rename(output_stl, persist_stl)
+                result["stl_url"] = f"/api/files/{job_id}_final.stl"
+                print(f"JewelForge: STL size={stl_size} bytes → {result['stl_url']}")
+
         if os.path.exists(output_glb):
-            glb_data = open(output_glb, "rb").read()
-            if len(glb_data) > 200:
-                result["glb_base64"] = base64.b64encode(glb_data).decode()
-                print(f"JewelForge: GLB size={len(glb_data)} bytes")
+            glb_size = os.path.getsize(output_glb)
+            if glb_size > 200:
+                persist_glb = str(TEMP_DIR / f"{job_id}_final.glb")
+                os.rename(output_glb, persist_glb)
+                result["glb_url"] = f"/api/files/{job_id}_final.glb"
+                print(f"JewelForge: GLB size={glb_size} bytes → {result['glb_url']}")
 
         return result
 
     finally:
-        for f in [input_glb, output_stl, output_glb]:
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+        # Only clean up the input — outputs are served via /api/files/
+        try:
+            os.remove(input_glb)
+        except OSError:
+            pass
 
 
 @app.post("/api/full-pipeline")
