@@ -669,16 +669,28 @@ async def generate_3d(
 @app.post("/api/generate-3d/submit")
 async def generate_3d_submit(
     image_base64: str = Form(...),
+    image_base64_side: str = Form(None),
+    image_base64_top: str = Form(None),
     engine: str = Form("hitem3d"),
 ):
-    """Submit 3D generation task. Returns task_id for polling. Non-blocking."""
-    image_bytes = base64.b64decode(image_base64)
+    """Submit 3D generation task. Supports single-view and multi-view.
+
+    Multi-view mapping to Hitem3D 4-view bitmask (front/back/left/right):
+      image_base64      → front  (required)
+      image_base64_top  → back   (optional, top view as back substitute)
+      image_base64_side → left   (optional, side view as left)
+
+    Bitmask: 3 views = "1110", 2 views = varies, 1 view = single-image mode.
+    """
+    front_bytes = base64.b64decode(image_base64)
+    side_bytes = base64.b64decode(image_base64_side) if image_base64_side else None
+    top_bytes = base64.b64decode(image_base64_top) if image_base64_top else None
 
     if engine == "hitem3d" and HITEM3D_ACCESS_KEY:
         async with httpx.AsyncClient(timeout=300) as client:
             token = await hitem3d_get_token(client)
             headers = {"Authorization": f"Bearer {token}"}
-            files = {"images": ("jewelry.png", image_bytes, "image/png")}
+
             form_data = {
                 "request_type": "1",
                 "model": "hitem3dv2.0",
@@ -686,17 +698,48 @@ async def generate_3d_submit(
                 "face": "2000000",
                 "format": "2",
             }
+
+            # Multi-view if side or top provided
+            if side_bytes or top_bytes:
+                # Build multi_images in order: front, back(top), left(side)
+                files = [("multi_images", ("front.png", front_bytes, "image/png"))]
+                bit = "1"  # front
+
+                if top_bytes:
+                    files.append(("multi_images", ("back.png", top_bytes, "image/png")))
+                    bit += "1"  # back
+                else:
+                    bit += "0"
+
+                if side_bytes:
+                    files.append(("multi_images", ("left.png", side_bytes, "image/png")))
+                    bit += "1"  # left
+                else:
+                    bit += "0"
+
+                bit += "0"  # right — not used
+                form_data["multi_images_bit"] = bit
+
+                views_sent = len(files)
+                print(f"JewelForge: Hitem3D multi-view submit — {views_sent} views, bit={bit}")
+            else:
+                # Single-view fallback (backward compatible)
+                files = {"images": ("jewelry.png", front_bytes, "image/png")}
+                views_sent = 1
+                print("JewelForge: Hitem3D single-view submit")
+
             resp = await client.post(
                 "https://api.hitem3d.ai/open-api/v1/submit-task",
                 headers=headers, files=files, data=form_data,
             )
             result = resp.json()
-            print(f"JewelForge: Hitem3D submit: {result}")
+            print(f"JewelForge: Hitem3D submit response: {result}")
             if str(result.get("code")) != "200":
                 raise HTTPException(status_code=500, detail=f"Hitem3D submit failed: {result}")
             return {
                 "task_id": result["data"]["task_id"],
                 "engine": "hitem3d",
+                "views_sent": views_sent,
                 "status": "submitted",
             }
 
