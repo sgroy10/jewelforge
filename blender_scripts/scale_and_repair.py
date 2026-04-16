@@ -169,6 +169,7 @@ def light_cleanup(obj):
 
     bpy.ops.mesh.remove_doubles(threshold=0.00001)
     bpy.ops.mesh.delete_loose(use_verts=True, use_edges=True, use_faces=False)
+    bpy.ops.mesh.fill_holes(sides=0)
     bpy.ops.mesh.normals_make_consistent(inside=False)
 
     bpy.ops.object.mode_set(mode='OBJECT')
