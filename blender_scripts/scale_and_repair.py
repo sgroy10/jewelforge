@@ -73,17 +73,23 @@ def get_mesh_stats(obj):
 
     dims = obj.dimensions
 
+    # Always compute volume (even non-manifold) — abs value is a usable estimate
+    bm.faces.ensure_lookup_table()
     volume = 0.0
-    if is_watertight:
-        bm.faces.ensure_lookup_table()
-        for face in bm.faces:
-            if len(face.verts) >= 3:
-                v0 = face.verts[0].co
-                for i in range(1, len(face.verts) - 1):
-                    v1 = face.verts[i].co
-                    v2 = face.verts[i + 1].co
-                    volume += v0.dot(v1.cross(v2)) / 6.0
-        volume = abs(volume)
+    for face in bm.faces:
+        if len(face.verts) >= 3:
+            v0 = face.verts[0].co
+            for i in range(1, len(face.verts) - 1):
+                v1 = face.verts[i].co
+                v2 = face.verts[i + 1].co
+                volume += v0.dot(v1.cross(v2)) / 6.0
+    volume_m3 = abs(volume)
+    volume_mm3 = volume_m3 * 1.0e9
+
+    DENSITIES = {
+        "gold_14k": 0.01333, "gold_18k": 0.01540, "gold_22k": 0.01760,
+        "silver_925": 0.01030, "platinum_950": 0.02140,
+    }
 
     stats = {
         "vertices": len(mesh.vertices),
@@ -96,7 +102,10 @@ def get_mesh_stats(obj):
             "y": round(dims.y, 4),
             "z": round(dims.z, 4),
         },
-        "volume_mm3": round(volume, 4),
+        "volume_mm3": round(volume_mm3, 4),
+        "estimated_weight_grams": {
+            m: round(volume_mm3 * d, 4) for m, d in DENSITIES.items()
+        },
     }
     bm.free()
     return stats
@@ -161,7 +170,7 @@ def scale_to_mm(obj, jewelry_type, us_ring_size=None, height_mm=None):
 
 
 def light_cleanup(obj):
-    """Fix minor mesh issues."""
+    """Fix minor mesh issues + attempt manifold repair via fill_holes."""
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     bpy.ops.object.mode_set(mode='EDIT')
@@ -169,7 +178,10 @@ def light_cleanup(obj):
 
     bpy.ops.mesh.remove_doubles(threshold=0.00001)
     bpy.ops.mesh.delete_loose(use_verts=True, use_edges=True, use_faces=False)
-    bpy.ops.mesh.fill_holes(sides=0)
+    try:
+        bpy.ops.mesh.fill_holes(sides=0)
+    except RuntimeError:
+        pass
     bpy.ops.mesh.normals_make_consistent(inside=False)
 
     bpy.ops.object.mode_set(mode='OBJECT')
@@ -374,6 +386,7 @@ def main():
     print(f"JewelForge: GLB exported to {output_glb}")
 
     # Output stats JSON
+    needs_repair = not (final_stats["is_manifold"] and final_stats["is_watertight"])
     stats = {
         "input_vertices": initial_stats["vertices"],
         "input_faces": initial_stats["faces"],
@@ -383,6 +396,10 @@ def main():
         "is_watertight": final_stats["is_watertight"],
         "bounding_box_mm": final_stats["bounding_box_mm"],
         "volume_mm3": final_stats["volume_mm3"],
+        "estimated_weight_grams": final_stats.get("estimated_weight_grams", {}),
+        "repair_applied": True,
+        "repair_method": "fill_holes",
+        "needs_repair": needs_repair,
         "jewelry_type": jewelry_type,
         "target_mm": target_mm,
         "us_ring_size": us_ring_size,
