@@ -117,8 +117,11 @@ def scale_to_mm(obj, jewelry_type, us_ring_size=None, height_mm=None):
 
     if jtype == "ring" and us_ring_size is not None:
         target_mm = US_RING_SIZES.get(float(us_ring_size), 17.35)
-        target_axis = "x"  # Ring diameter is along X (widest)
-        print(f"JewelForge: Ring size US {us_ring_size} → {target_mm}mm inner diameter")
+        dim_axes = sorted([("x", dims.x), ("y", dims.y), ("z", dims.z)],
+                          key=lambda p: p[1])
+        target_axis = dim_axes[1][0]  # median dim = ring outer diameter
+        print(f"JewelForge: Ring size US {us_ring_size} → {target_mm}mm, "
+              f"scaling {target_axis}-axis (median dim)")
     elif height_mm is not None:
         target_mm = float(height_mm)
         target_axis = defaults["target_axis"]
@@ -318,6 +321,12 @@ def main():
     obj = mesh_objects[0]
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
+
+    # Early decimate: Tripo meshes arrive at 1-1.5M faces — too slow for
+    # downstream ops. Cut to 200k upfront so the whole pipeline runs in ~20s.
+    if len(obj.data.polygons) > 200000:
+        print(f"JewelForge: Early decimate {len(obj.data.polygons)} → 200000 faces")
+        decimate_if_needed(obj, target_faces=200000)
 
     # Stats before
     initial_stats = get_mesh_stats(obj)
