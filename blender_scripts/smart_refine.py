@@ -207,11 +207,10 @@ def apply_shell(obj, thickness_mm):
     obj.select_set(True)
     mod = obj.modifiers.new("Shell", type='SOLIDIFY')
     mod.thickness = thickness_m
-    mod.offset = 1.0
+    mod.offset = -1.0
     mod.use_quality_normals = True
     mod.use_even_offset = True
-    mod.use_rim = True
-    mod.use_rim_only = False
+    mod.use_rim = False
     try:
         bpy.ops.object.modifier_apply(modifier=mod.name)
         print(f"SmartRefine: Solidify applied — wall {thickness_mm}mm inward, "
