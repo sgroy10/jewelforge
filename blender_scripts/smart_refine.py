@@ -176,23 +176,46 @@ def light_cleanup(obj):
     bpy.ops.object.mode_set(mode='OBJECT')
 
 
+def recalc_normals(obj):
+    """Aggressively recalculate all normals outward before shelling.
+
+    Solidify pushes geometry in the normal direction. If normals are
+    flipped on some faces, the shell extrudes outward instead of inward,
+    ballooning the bbox. This runs recalculate-outside on the entire mesh.
+    """
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.normals_make_consistent(inside=False)
+    bpy.ops.mesh.set_normals_from_faces()
+    bpy.ops.object.mode_set(mode='OBJECT')
+    print("SmartRefine: Normals recalculated outward")
+
+
 def apply_shell(obj, thickness_mm):
     """Hollow the mesh using Blender's Solidify modifier.
 
-    Negative thickness = inward offset = hollow interior.
-    This is the Blender equivalent of Rhino's Shell command.
+    Positive thickness + offset=1 = new surface pushed inward from the
+    original. The outer surface stays exactly where it was → bbox doesn't
+    change. This is the Blender equivalent of Rhino's Shell command.
     """
+    recalc_normals(obj)
+
     thickness_m = thickness_mm / 1000.0
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     mod = obj.modifiers.new("Shell", type='SOLIDIFY')
-    mod.thickness = -thickness_m
-    mod.offset = -1.0
+    mod.thickness = thickness_m
+    mod.offset = 1.0
     mod.use_quality_normals = True
     mod.use_even_offset = True
+    mod.use_rim = True
+    mod.use_rim_only = False
     try:
         bpy.ops.object.modifier_apply(modifier=mod.name)
-        print(f"SmartRefine: Solidify applied — wall thickness {thickness_mm}mm")
+        print(f"SmartRefine: Solidify applied — wall {thickness_mm}mm inward, "
+              f"bbox should be unchanged")
         return True
     except RuntimeError as e:
         print(f"SmartRefine: WARNING — Solidify failed: {e}")
@@ -345,18 +368,19 @@ def main():
         print(f"SmartRefine: Early decimate {len(obj.data.polygons)} → 200k")
         decimate_if_needed(obj, target_faces=200000)
 
-    # Input stats
-    input_stats = get_mesh_stats(obj)
-    print(f"SmartRefine: Input — {input_stats['vertices']} verts, "
-          f"{input_stats['faces']} faces, vol={input_stats['volume_mm3']:.1f}mm³")
-
-    # Step 1: Ring sizing
+    # Step 1: Ring sizing (before stats so input_stats show real-world mm)
     target_mm = None
     if jewelry_type.lower() == "ring" and us_ring_size is not None:
         target_mm = scale_to_ring_size(obj, us_ring_size)
 
     # Step 2: Light cleanup + fill holes
     light_cleanup(obj)
+
+    # Input stats (after sizing + cleanup so volumes are in mm³ not m³)
+    input_stats = get_mesh_stats(obj)
+    print(f"SmartRefine: Input — {input_stats['vertices']} verts, "
+          f"{input_stats['faces']} faces, vol={input_stats['volume_mm3']:.1f}mm³, "
+          f"~{input_stats['estimated_weight_grams'].get(metal_type, 0):.1f}g {metal_type}")
 
     # Step 3: SHELL to target weight (the key operation)
     shell_stats = {"shell_applied": False}
