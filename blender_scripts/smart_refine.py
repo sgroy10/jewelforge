@@ -194,63 +194,56 @@ def recalc_normals(obj):
 
 
 def apply_shell(obj, thickness_mm):
-    """Hollow the mesh via Boolean subtraction of a scaled-down copy.
+    """Hollow the mesh by duplicating + shrinking inward + joining.
 
-    Solidify fails on non-manifold AI meshes (bbox balloons from normals
-    issues). Boolean DIFFERENCE is more robust: we subtract a uniformly
-    smaller copy from the original. Outer surface stays exactly in place.
+    Solidify balloons bbox on non-manifold meshes. Boolean DIFFERENCE
+    does nothing on them. This approach works on ANY mesh:
+    1. Duplicate the mesh
+    2. Shrink all vertices inward along their normals by wall_thickness
+    3. Flip the inner copy's normals (faces point inward = hollow core)
+    4. Join inner + outer into one shell object
+
+    Outer surface stays exactly in place → bbox unchanged.
     """
     thickness_m = thickness_mm / 1000.0
-    dims = obj.dimensions
 
-    # Compute per-axis scale for the inner copy: (dim - 2*thickness) / dim
-    def inner_scale(dim):
-        if dim <= 0:
-            return 0.9
-        s = (dim - 2 * thickness_m) / dim
-        return max(0.1, min(0.99, s))
-
-    sx = inner_scale(dims.x)
-    sy = inner_scale(dims.y)
-    sz = inner_scale(dims.z)
-    print(f"SmartRefine: Boolean shell — wall {thickness_mm}mm, "
-          f"inner scale ({sx:.3f}, {sy:.3f}, {sz:.3f})")
-
-    # Duplicate mesh for inner cutter
-    inner = obj.copy()
-    inner.data = obj.data.copy()
-    bpy.context.scene.collection.objects.link(inner)
-    inner.scale = (sx, sy, sz)
-    bpy.context.view_layer.update()
-    bpy.ops.object.select_all(action='DESELECT')
-    inner.select_set(True)
-    bpy.context.view_layer.objects.active = inner
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-
-    # Boolean DIFFERENCE: original minus inner
-    bpy.ops.object.select_all(action='DESELECT')
-    obj.select_set(True)
-    bpy.context.view_layer.objects.active = obj
-    mod = obj.modifiers.new("Shell", type='BOOLEAN')
-    mod.operation = 'DIFFERENCE'
-    mod.solver = 'EXACT'
-    mod.object = inner
+    pre_dims = obj.dimensions
+    print(f"SmartRefine: Shell — wall {thickness_mm}mm via shrink/fatten, "
+          f"pre-bbox {pre_dims.x*1000:.2f} x {pre_dims.y*1000:.2f} x "
+          f"{pre_dims.z*1000:.2f} mm")
 
     try:
-        bpy.ops.object.modifier_apply(modifier=mod.name)
-        bpy.data.objects.remove(inner, do_unlink=True)
-        new_dims = obj.dimensions
-        print(f"SmartRefine: Boolean shell applied — "
-              f"bbox {new_dims.x*1000:.2f} x {new_dims.y*1000:.2f} x "
-              f"{new_dims.z*1000:.2f} mm")
+        # Duplicate
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.duplicate()
+        inner = bpy.context.active_object
+
+        # Shrink inward along normals + flip
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.transform.shrink_fatten(value=-thickness_m)
+        bpy.ops.mesh.flip_normals()
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        # Join inner into outer
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        inner.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.join()
+
+        post_dims = obj.dimensions
+        print(f"SmartRefine: Shell applied — "
+              f"post-bbox {post_dims.x*1000:.2f} x {post_dims.y*1000:.2f} x "
+              f"{post_dims.z*1000:.2f} mm, "
+              f"verts={len(obj.data.vertices)}, faces={len(obj.data.polygons)}")
         return True
-    except RuntimeError as e:
-        print(f"SmartRefine: WARNING — Boolean shell failed: {e}")
-        try:
-            obj.modifiers.remove(mod)
-        except:
-            pass
-        bpy.data.objects.remove(inner, do_unlink=True)
+
+    except Exception as e:
+        print(f"SmartRefine: WARNING — shell failed: {e}")
+        bpy.ops.object.mode_set(mode='OBJECT')
         return False
 
 
