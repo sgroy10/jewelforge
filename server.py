@@ -568,6 +568,107 @@ def run_blender_scale_and_repair(
 
 
 # ──────────────────────────────────────────────
+# Smart Refine (shelling-based, separate from scale_and_repair)
+# ──────────────────────────────────────────────
+def run_blender_smart_refine(
+    input_glb: str, output_stl: str, output_glb: str,
+    jewelry_type: str = "ring", us_ring_size: float = None,
+    target_weight_grams: float = None, metal_type: str = None,
+    wall_thickness_mm: float = None,
+) -> dict:
+    if not BLENDER_AVAILABLE:
+        raise Exception("Blender not available")
+    params = {
+        "jewelry_type": jewelry_type,
+        "us_ring_size": us_ring_size,
+        "target_weight_grams": target_weight_grams,
+        "metal_type": metal_type,
+        "wall_thickness_mm": wall_thickness_mm,
+    }
+    script_path = Path(__file__).parent / "blender_scripts" / "smart_refine.py"
+    result = subprocess.run(
+        ["blender", "--background", "--python", str(script_path),
+         "--", input_glb, output_stl, output_glb, json.dumps(params)],
+        capture_output=True, text=True, timeout=300,
+    )
+    for line in result.stdout.split("\n"):
+        if line.startswith("SmartRefine:"):
+            print(line)
+    stats = {}
+    for line in result.stdout.split("\n"):
+        if line.startswith("SMARTREFINE_STATS:"):
+            try:
+                stats = json.loads(line.replace("SMARTREFINE_STATS:", ""))
+            except json.JSONDecodeError:
+                pass
+    if result.returncode != 0 and not os.path.exists(output_stl):
+        raise Exception(f"smart_refine failed: {result.stderr[-500:]}")
+    return stats
+
+
+@app.post("/api/smart-refine")
+async def smart_refine(
+    glb_url: str = Form(None),
+    glb_base64: str = Form(None),
+    jewelry_type: str = Form("ring"),
+    us_ring_size: float = Form(None),
+    target_weight_grams: float = Form(None),
+    metal_type: str = Form("gold_14k"),
+    wall_thickness_mm: float = Form(None),
+):
+    """Shell-based jewelry refine. Hollows the mesh to hit target weight
+    without distorting proportions. Separate from /api/scale-and-repair."""
+    job_id = str(uuid.uuid4())[:8]
+    input_glb = str(TEMP_DIR / f"{job_id}_input.glb")
+    output_stl = str(TEMP_DIR / f"{job_id}_output.stl")
+    output_glb = str(TEMP_DIR / f"{job_id}_output.glb")
+
+    try:
+        if glb_url:
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.get(glb_url)
+                    resp.raise_for_status()
+                    with open(input_glb, "wb") as f:
+                        f.write(resp.content)
+            except httpx.HTTPStatusError as e:
+                raise HTTPException(status_code=422, detail={
+                    "error": "glb_url_unreachable",
+                    "message": f"Failed to download GLB: upstream {e.response.status_code}",
+                    "url": glb_url,
+                })
+        elif glb_base64:
+            with open(input_glb, "wb") as f:
+                f.write(base64.b64decode(glb_base64))
+        else:
+            raise HTTPException(status_code=400, detail="Provide glb_url or glb_base64")
+
+        stats = run_blender_smart_refine(
+            input_glb, output_stl, output_glb,
+            jewelry_type=jewelry_type, us_ring_size=us_ring_size,
+            target_weight_grams=target_weight_grams, metal_type=metal_type,
+            wall_thickness_mm=wall_thickness_mm,
+        )
+
+        result = {"success": True, "stats": stats}
+        if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
+            persist = str(TEMP_DIR / f"{job_id}_smart.stl")
+            os.rename(output_stl, persist)
+            result["stl_url"] = f"/api/files/{job_id}_smart.stl"
+        if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
+            persist = str(TEMP_DIR / f"{job_id}_smart.glb")
+            os.rename(output_glb, persist)
+            result["glb_url"] = f"/api/files/{job_id}_smart.glb"
+        return result
+
+    finally:
+        try:
+            os.remove(input_glb)
+        except OSError:
+            pass
+
+
+# ──────────────────────────────────────────────
 # API Endpoints
 # ──────────────────────────────────────────────
 
