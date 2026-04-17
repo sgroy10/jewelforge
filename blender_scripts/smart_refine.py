@@ -432,7 +432,15 @@ def main():
     # Step 3: SHELL to target weight (ring-size correction folded into loop)
     ring_target = target_mm if jewelry_type.lower() == "ring" and target_mm else None
     shell_stats = {"shell_applied": False}
-    if target_weight is not None and float(target_weight) > 0:
+    solid_weight = input_stats["estimated_weight_grams"].get(metal_type, 0)
+    if target_weight is not None and float(target_weight) > 0 and solid_weight <= float(target_weight):
+        print(f"SmartRefine: Solid weight ({solid_weight:.2f}g) already ≤ target "
+              f"({target_weight}g) — shelling would only remove material. Skipping.")
+        shell_stats = {
+            "shell_applied": False,
+            "reason": "solid_already_lighter_than_target",
+        }
+    elif target_weight is not None and float(target_weight) > 0:
         if wall_thickness is not None:
             success = apply_shell(obj, float(wall_thickness))
             if success and ring_target:
