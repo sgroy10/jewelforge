@@ -194,31 +194,63 @@ def recalc_normals(obj):
 
 
 def apply_shell(obj, thickness_mm):
-    """Hollow the mesh using Blender's Solidify modifier.
+    """Hollow the mesh via Boolean subtraction of a scaled-down copy.
 
-    Positive thickness + offset=1 = new surface pushed inward from the
-    original. The outer surface stays exactly where it was → bbox doesn't
-    change. This is the Blender equivalent of Rhino's Shell command.
+    Solidify fails on non-manifold AI meshes (bbox balloons from normals
+    issues). Boolean DIFFERENCE is more robust: we subtract a uniformly
+    smaller copy from the original. Outer surface stays exactly in place.
     """
-    recalc_normals(obj)
-
     thickness_m = thickness_mm / 1000.0
-    bpy.context.view_layer.objects.active = obj
+    dims = obj.dimensions
+
+    # Compute per-axis scale for the inner copy: (dim - 2*thickness) / dim
+    def inner_scale(dim):
+        if dim <= 0:
+            return 0.9
+        s = (dim - 2 * thickness_m) / dim
+        return max(0.1, min(0.99, s))
+
+    sx = inner_scale(dims.x)
+    sy = inner_scale(dims.y)
+    sz = inner_scale(dims.z)
+    print(f"SmartRefine: Boolean shell — wall {thickness_mm}mm, "
+          f"inner scale ({sx:.3f}, {sy:.3f}, {sz:.3f})")
+
+    # Duplicate mesh for inner cutter
+    inner = obj.copy()
+    inner.data = obj.data.copy()
+    bpy.context.scene.collection.objects.link(inner)
+    inner.scale = (sx, sy, sz)
+    bpy.context.view_layer.update()
+    bpy.ops.object.select_all(action='DESELECT')
+    inner.select_set(True)
+    bpy.context.view_layer.objects.active = inner
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+    # Boolean DIFFERENCE: original minus inner
+    bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
-    mod = obj.modifiers.new("Shell", type='SOLIDIFY')
-    mod.thickness = thickness_m
-    mod.offset = -1.0
-    mod.use_quality_normals = True
-    mod.use_even_offset = True
-    mod.use_rim = False
+    bpy.context.view_layer.objects.active = obj
+    mod = obj.modifiers.new("Shell", type='BOOLEAN')
+    mod.operation = 'DIFFERENCE'
+    mod.solver = 'EXACT'
+    mod.object = inner
+
     try:
         bpy.ops.object.modifier_apply(modifier=mod.name)
-        print(f"SmartRefine: Solidify applied — wall {thickness_mm}mm inward, "
-              f"bbox should be unchanged")
+        bpy.data.objects.remove(inner, do_unlink=True)
+        new_dims = obj.dimensions
+        print(f"SmartRefine: Boolean shell applied — "
+              f"bbox {new_dims.x*1000:.2f} x {new_dims.y*1000:.2f} x "
+              f"{new_dims.z*1000:.2f} mm")
         return True
     except RuntimeError as e:
-        print(f"SmartRefine: WARNING — Solidify failed: {e}")
-        obj.modifiers.remove(mod)
+        print(f"SmartRefine: WARNING — Boolean shell failed: {e}")
+        try:
+            obj.modifiers.remove(mod)
+        except:
+            pass
+        bpy.data.objects.remove(inner, do_unlink=True)
         return False
 
 
