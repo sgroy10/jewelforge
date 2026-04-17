@@ -247,28 +247,45 @@ def apply_shell(obj, thickness_mm):
         return False
 
 
-def shell_to_target_weight(obj, target_g, metal_type, min_wall=0.3, max_wall=2.0):
+def _apply_ring_size_correction(obj, target_mm):
+    """Uniform-scale to restore the median bbox dim to target_mm after shelling."""
+    dims = obj.dimensions
+    dim_axes = sorted(
+        [("x", dims.x), ("y", dims.y), ("z", dims.z)],
+        key=lambda p: p[1],
+    )
+    current_median = dim_axes[1][1]
+    target_m = target_mm / 1000.0
+    if current_median > 0:
+        k = target_m / current_median
+        obj.scale *= k
+        bpy.context.view_layer.update()
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+
+def shell_to_target_weight(obj, target_g, metal_type, ring_target_mm=None,
+                           min_wall=0.3, max_wall=2.0):
     """Iterate wall thickness until weight matches target (±10%).
 
-    Starts at 0.8mm, adjusts up/down based on computed weight.
-    Uses binary search for fast convergence.
+    Each iteration: shell → ring-size correction → measure weight.
+    The correction is folded INTO the loop so the weight measurement
+    reflects the final post-correction shape (not the pre-correction
+    weight that then drifts when we correct ring size).
     """
     density = METAL_DENSITIES.get(metal_type, 0.01333)
 
-    # Save original mesh for re-shelling
     orig_mesh = obj.data.copy()
 
     lo, hi = min_wall, max_wall
     best_wall = 0.8
     best_delta = 100.0
     iterations = 0
-    max_iters = 5
+    max_iters = 6
 
     for i in range(max_iters):
         iterations = i + 1
         wall = (lo + hi) / 2.0
 
-        # Reset to original mesh before re-shelling
         obj.data = orig_mesh.copy()
         bpy.context.view_layer.update()
 
@@ -278,11 +295,16 @@ def shell_to_target_weight(obj, target_g, metal_type, min_wall=0.3, max_wall=2.0
             lo = wall
             continue
 
+        # Ring-size correction INSIDE the loop — measure weight AFTER
+        if ring_target_mm is not None:
+            _apply_ring_size_correction(obj, ring_target_mm)
+
         vol = compute_volume_mm3(obj)
         weight = vol * density
         delta_pct = (weight - target_g) / target_g * 100.0
         print(f"SmartRefine: Iter {iterations}: wall={wall:.3f}mm, "
-              f"vol={vol:.1f}mm³, weight={weight:.2f}g ({delta_pct:+.1f}%)")
+              f"vol={vol:.1f}mm³, weight={weight:.2f}g ({delta_pct:+.1f}%)"
+              + (f" [ring corrected to {ring_target_mm}mm]" if ring_target_mm else ""))
 
         if abs(delta_pct) < abs(best_delta):
             best_wall = wall
@@ -296,13 +318,14 @@ def shell_to_target_weight(obj, target_g, metal_type, min_wall=0.3, max_wall=2.0
         else:
             lo = wall
 
-    # Final shell at best wall thickness
+    # Final shell + correction at best wall
     if abs(best_delta) > 10.0 or iterations > 1:
         obj.data = orig_mesh.copy()
         bpy.context.view_layer.update()
         apply_shell(obj, best_wall)
+        if ring_target_mm is not None:
+            _apply_ring_size_correction(obj, ring_target_mm)
 
-    # Clean up the copy
     bpy.data.meshes.remove(orig_mesh)
 
     final_vol = compute_volume_mm3(obj)
@@ -406,12 +429,14 @@ def main():
           f"{input_stats['faces']} faces, vol={input_stats['volume_mm3']:.1f}mm³, "
           f"~{input_stats['estimated_weight_grams'].get(metal_type, 0):.1f}g {metal_type}")
 
-    # Step 3: SHELL to target weight (the key operation)
+    # Step 3: SHELL to target weight (ring-size correction folded into loop)
+    ring_target = target_mm if jewelry_type.lower() == "ring" and target_mm else None
     shell_stats = {"shell_applied": False}
     if target_weight is not None and float(target_weight) > 0:
         if wall_thickness is not None:
-            # Fixed wall thickness — just apply it
             success = apply_shell(obj, float(wall_thickness))
+            if success and ring_target:
+                _apply_ring_size_correction(obj, ring_target)
             shell_stats = {
                 "shell_applied": success,
                 "wall_thickness_mm": float(wall_thickness),
@@ -419,39 +444,19 @@ def main():
                 "weight_delta_percent": None,
             }
         else:
-            # Auto-find wall thickness to hit target weight
             shell_stats = shell_to_target_weight(
                 obj, float(target_weight), metal_type,
+                ring_target_mm=ring_target,
             )
     elif wall_thickness is not None:
         success = apply_shell(obj, float(wall_thickness))
+        if success and ring_target:
+            _apply_ring_size_correction(obj, ring_target)
         shell_stats = {
             "shell_applied": success,
             "wall_thickness_mm": float(wall_thickness),
             "iterations": 1,
         }
-
-    # Step 4: Post-shell ring-size correction (shrink_fatten pushes edges
-    # slightly outward, growing bbox ~5%. Restore the median dim to target.)
-    if target_mm is not None and shell_stats.get("shell_applied"):
-        dims = obj.dimensions
-        dim_axes = sorted(
-            [("x", dims.x), ("y", dims.y), ("z", dims.z)],
-            key=lambda p: p[1],
-        )
-        median_axis = dim_axes[1][0]
-        current_median = dim_axes[1][1]
-        target_m = target_mm / 1000.0
-        if current_median > 0:
-            correction = target_m / current_median
-            obj.scale *= correction
-            bpy.context.view_layer.update()
-            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-            final_dims = obj.dimensions
-            print(f"SmartRefine: Ring-size correction — {median_axis}-axis "
-                  f"scaled by {correction:.4f}, bbox now "
-                  f"{final_dims.x*1000:.2f} x {final_dims.y*1000:.2f} x "
-                  f"{final_dims.z*1000:.2f} mm")
 
     # Step 5: Post-shell cleanup
     light_cleanup(obj)
