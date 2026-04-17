@@ -431,10 +431,32 @@ def main():
             "iterations": 1,
         }
 
-    # Step 4: Post-shell cleanup
+    # Step 4: Post-shell ring-size correction (shrink_fatten pushes edges
+    # slightly outward, growing bbox ~5%. Restore the median dim to target.)
+    if target_mm is not None and shell_stats.get("shell_applied"):
+        dims = obj.dimensions
+        dim_axes = sorted(
+            [("x", dims.x), ("y", dims.y), ("z", dims.z)],
+            key=lambda p: p[1],
+        )
+        median_axis = dim_axes[1][0]
+        current_median = dim_axes[1][1]
+        target_m = target_mm / 1000.0
+        if current_median > 0:
+            correction = target_m / current_median
+            obj.scale *= correction
+            bpy.context.view_layer.update()
+            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+            final_dims = obj.dimensions
+            print(f"SmartRefine: Ring-size correction — {median_axis}-axis "
+                  f"scaled by {correction:.4f}, bbox now "
+                  f"{final_dims.x*1000:.2f} x {final_dims.y*1000:.2f} x "
+                  f"{final_dims.z*1000:.2f} mm")
+
+    # Step 5: Post-shell cleanup
     light_cleanup(obj)
 
-    # Step 5: Smooth + sharpen
+    # Step 6: Smooth + sharpen
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     bpy.ops.object.shade_smooth()
