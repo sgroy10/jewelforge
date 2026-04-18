@@ -650,13 +650,59 @@ async def smart_refine(
             wall_thickness_mm=wall_thickness_mm,
         )
 
+        # Post-Blender manifold repair via PyMeshFix
+        repaired_stl = str(TEMP_DIR / f"{job_id}_repaired.stl")
+        repaired_glb = str(TEMP_DIR / f"{job_id}_repaired.glb")
+        try:
+            import pymeshfix
+            import trimesh as _trimesh
+            import numpy as _np
+
+            if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
+                mesh = _trimesh.load(output_stl)
+                verts = _np.array(mesh.vertices, dtype=_np.float64)
+                faces = _np.array(mesh.faces, dtype=_np.int32)
+                print(f"SmartRefine: PyMeshFix input — {len(verts)} verts, {len(faces)} faces")
+
+                mfix = pymeshfix.MeshFix(verts, faces)
+                mfix.repair(verbose=True)
+
+                repaired_mesh = _trimesh.Trimesh(
+                    vertices=mfix.v, faces=mfix.f, process=False)
+
+                repaired_mesh.export(repaired_stl)
+                repaired_mesh.export(repaired_glb)
+
+                stats["pymeshfix_applied"] = True
+                stats["pymeshfix_verts"] = len(mfix.v)
+                stats["pymeshfix_faces"] = len(mfix.f)
+                stats["pymeshfix_watertight"] = bool(repaired_mesh.is_watertight)
+                stats["pymeshfix_volume_mm3"] = round(float(abs(repaired_mesh.volume)) * 1e9, 4) if repaired_mesh.is_watertight else None
+                print(f"SmartRefine: PyMeshFix output — {len(mfix.v)} verts, "
+                      f"{len(mfix.f)} faces, watertight={repaired_mesh.is_watertight}")
+
+                # Use repaired files instead of raw Blender output
+                output_stl = repaired_stl
+                output_glb = repaired_glb
+        except ImportError:
+            print("SmartRefine: PyMeshFix not installed, skipping manifold repair")
+            stats["pymeshfix_applied"] = False
+        except Exception as e:
+            print(f"SmartRefine: PyMeshFix failed: {e}")
+            stats["pymeshfix_applied"] = False
+            stats["pymeshfix_error"] = str(e)
+
         result = {"success": True, "stats": stats}
         if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
             persist = str(TEMP_DIR / f"{job_id}_smart.stl")
+            if os.path.exists(persist):
+                os.remove(persist)
             os.rename(output_stl, persist)
             result["stl_url"] = f"/api/files/{job_id}_smart.stl"
         if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
             persist = str(TEMP_DIR / f"{job_id}_smart.glb")
+            if os.path.exists(persist):
+                os.remove(persist)
             os.rename(output_glb, persist)
             result["glb_url"] = f"/api/files/{job_id}_smart.glb"
         return result
