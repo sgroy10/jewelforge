@@ -650,11 +650,11 @@ async def smart_refine(
             wall_thickness_mm=wall_thickness_mm,
         )
 
-        # Post-Blender manifold repair via PyMeshFix
+        # Post-Blender manifold repair via PyMeshFix (low-level C API, no pyvista)
         repaired_stl = str(TEMP_DIR / f"{job_id}_repaired.stl")
         repaired_glb = str(TEMP_DIR / f"{job_id}_repaired.glb")
         try:
-            import pymeshfix
+            from pymeshfix._meshfix import PyTMesh
             import trimesh as _trimesh
             import numpy as _np
 
@@ -664,28 +664,31 @@ async def smart_refine(
                 faces = _np.array(mesh.faces, dtype=_np.int32)
                 print(f"SmartRefine: PyMeshFix input — {len(verts)} verts, {len(faces)} faces")
 
-                mfix = pymeshfix.MeshFix(verts, faces)
-                mfix.repair(verbose=True)
+                tin = PyTMesh()
+                tin.load_array(verts, faces)
+                tin.fill_small_boundaries(nbe=0, refine=True)
+                tin.clean(max_iters=10, inner_loops=3)
+                vclean, fclean = tin.return_arrays()
 
                 repaired_mesh = _trimesh.Trimesh(
-                    vertices=mfix.v, faces=mfix.f, process=False)
+                    vertices=vclean, faces=fclean, process=False)
 
                 repaired_mesh.export(repaired_stl)
                 repaired_mesh.export(repaired_glb)
 
                 stats["pymeshfix_applied"] = True
-                stats["pymeshfix_verts"] = len(mfix.v)
-                stats["pymeshfix_faces"] = len(mfix.f)
+                stats["pymeshfix_verts"] = len(vclean)
+                stats["pymeshfix_faces"] = len(fclean)
                 stats["pymeshfix_watertight"] = bool(repaired_mesh.is_watertight)
-                stats["pymeshfix_volume_mm3"] = round(float(abs(repaired_mesh.volume)) * 1e9, 4) if repaired_mesh.is_watertight else None
-                print(f"SmartRefine: PyMeshFix output — {len(mfix.v)} verts, "
-                      f"{len(mfix.f)} faces, watertight={repaired_mesh.is_watertight}")
+                if repaired_mesh.is_watertight:
+                    stats["pymeshfix_volume_mm3"] = round(float(abs(repaired_mesh.volume)), 4)
+                print(f"SmartRefine: PyMeshFix output — {len(vclean)} verts, "
+                      f"{len(fclean)} faces, watertight={repaired_mesh.is_watertight}")
 
-                # Use repaired files instead of raw Blender output
                 output_stl = repaired_stl
                 output_glb = repaired_glb
-        except ImportError:
-            print("SmartRefine: PyMeshFix not installed, skipping manifold repair")
+        except ImportError as ie:
+            print(f"SmartRefine: PyMeshFix import failed: {ie}")
             stats["pymeshfix_applied"] = False
         except Exception as e:
             print(f"SmartRefine: PyMeshFix failed: {e}")
