@@ -40,6 +40,33 @@ METAL_DENSITIES = {
     "silver_925": 0.01030, "platinum_950": 0.02140,
 }
 
+
+def normalize_metal_type(s):
+    """Accept various metal naming conventions and return canonical METAL_DENSITIES key.
+
+    Lovable sends '18k-gold', '14k-gold' etc. Backend stores 'gold_18k', 'gold_14k'.
+    Without this normalization, dict.get('18k-gold') returns None/0 and the
+    shell guard `solid <= target` fires incorrectly (0 <= any positive target).
+
+    Canonical: gold_14k, gold_18k, gold_22k, silver_925, platinum_950.
+    """
+    if not s:
+        return "gold_14k"
+    s = str(s).lower().strip().replace("-", "_")
+    if s in METAL_DENSITIES:
+        return s
+    for k in ("10k", "14k", "18k", "22k", "24k"):
+        if k in s and "gold" in s:
+            cand = f"gold_{k}"
+            if cand in METAL_DENSITIES:
+                return cand
+    if "silver" in s or "925" in s:
+        return "silver_925"
+    if "platinum" in s or s.startswith("pt") or "950" in s:
+        return "platinum_950"
+    print(f"SmartRefine: WARNING — unknown metal_type '{s}', defaulting to gold_14k")
+    return "gold_14k"
+
 DEFAULT_DIMENSIONS = {
     "ring":    {"target_mm": 17.35},
     "pendant": {"target_mm": 25.0},
@@ -384,12 +411,14 @@ def main():
     jewelry_type = params.get("jewelry_type", "ring")
     us_ring_size = params.get("us_ring_size")
     target_weight = params.get("target_weight_grams")
-    metal_type = params.get("metal_type", "gold_14k")
+    metal_type_raw = params.get("metal_type", "gold_14k")
+    metal_type = normalize_metal_type(metal_type_raw)
     wall_thickness = params.get("wall_thickness_mm")
 
     print(f"SmartRefine: Processing {input_path}")
     print(f"SmartRefine: Params — type={jewelry_type}, size={us_ring_size}, "
-          f"target={target_weight}g, metal={metal_type}, wall={wall_thickness}mm")
+          f"target={target_weight}g, metal={metal_type} (raw={metal_type_raw}), "
+          f"wall={wall_thickness}mm")
 
     # Import
     clear_scene()

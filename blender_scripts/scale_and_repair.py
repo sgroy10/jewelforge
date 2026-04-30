@@ -111,6 +111,34 @@ def get_mesh_stats(obj):
     return stats
 
 
+def normalize_metal_type(s):
+    """Map various metal naming conventions to canonical key.
+
+    Lovable sends '18k-gold', backend stores 'gold_18k'. Without this,
+    the figurine weight-mode lookup current_weight_grams = stats[metal_type]
+    returns None and uniform-scaling silently doesn't fire.
+
+    Canonical: gold_14k, gold_18k, gold_22k, silver_925, platinum_950.
+    """
+    canonical = {"gold_14k", "gold_18k", "gold_22k", "silver_925", "platinum_950"}
+    if not s:
+        return "gold_14k"
+    s = str(s).lower().strip().replace("-", "_")
+    if s in canonical:
+        return s
+    for k in ("10k", "14k", "18k", "22k", "24k"):
+        if k in s and "gold" in s:
+            cand = f"gold_{k}"
+            if cand in canonical:
+                return cand
+    if "silver" in s or "925" in s:
+        return "silver_925"
+    if "platinum" in s or s.startswith("pt") or "950" in s:
+        return "platinum_950"
+    print(f"JewelForge: WARNING — unknown metal_type '{s}', defaulting to gold_14k")
+    return "gold_14k"
+
+
 def scale_to_mm(obj, jewelry_type, us_ring_size=None, height_mm=None,
                 target_weight_grams=None, metal_type="gold_14k", current_weight_grams=None):
     """Scale the mesh to real-world mm dimensions OR to target weight.
@@ -337,11 +365,13 @@ def main():
     us_ring_size = params.get("us_ring_size")
     height_mm = params.get("height_mm")
     target_weight_grams = params.get("target_weight_grams")
-    metal_type = params.get("metal_type", "gold_14k")
+    metal_type_raw = params.get("metal_type", "gold_14k")
+    metal_type = normalize_metal_type(metal_type_raw)
 
     print(f"JewelForge: Processing {input_path}")
     print(f"JewelForge: Params — type={jewelry_type}, ring_size={us_ring_size}, "
-          f"height_mm={height_mm}, target_weight_grams={target_weight_grams}, metal={metal_type}")
+          f"height_mm={height_mm}, target_weight_grams={target_weight_grams}, "
+          f"metal={metal_type} (raw={metal_type_raw})")
 
     # Clear and import
     clear_scene()
