@@ -1,0 +1,38 @@
+# Test data and audit artifacts (not used by server)
+audit_inputs/
+audit_outputs/
+jewelforge_glb_audit.zip
+*.csv
+
+# Experimental scripts (not imported by server.py)
+qc.py
+audit.py
+weight_report.py
+hollow.py
+basrelief.py
+validate_mesh.py
+
+# Loose test artifact meshes in repo root
+shiva_*.glb
+shiva_*.stl
+ring_b_*.glb
+ring_b_*.stl
+Solitaire_*.glb
+Solitaire_*.stl
+Bamboo*.glb
+Bamboo*.stl
+latest_raw_hitem3d.glb
+jewelarchitect-*.glb
+test_download.glb
+test_minimal.glb
+FINAL_test.*
+REAL_test.*
+tripo_solitaire_smart_refined.*
+"Instant 3D"*
+
+# Caches and local state
+__pycache__/
+*.pyc
+.speclock/
+SPECLOCK.md
+NEXT_SESSION.md

@@ -111,11 +111,17 @@ def get_mesh_stats(obj):
     return stats
 
 
-def scale_to_mm(obj, jewelry_type, us_ring_size=None, height_mm=None):
-    """Scale the mesh to real-world mm dimensions.
+def scale_to_mm(obj, jewelry_type, us_ring_size=None, height_mm=None,
+                target_weight_grams=None, metal_type="gold_14k", current_weight_grams=None):
+    """Scale the mesh to real-world mm dimensions OR to target weight.
 
     Hitem3D outputs in arbitrary units (~1.0-1.5 range).
-    We need to scale to actual mm based on jewelry type.
+
+    Modes:
+      - Ring: us_ring_size sets median bbox dim from US_RING_SIZES table
+      - Size-driven (default for non-rings): height_mm or category default
+      - Weight-driven (NEW 2026-04-30, non-rings only): target_weight_grams
+        with metal_type computes uniform scale = (target/current)^(1/3)
     """
     dims = obj.dimensions
     print(f"JewelForge: Raw dimensions: {dims.x:.4f} x {dims.y:.4f} x {dims.z:.4f}")
@@ -123,6 +129,25 @@ def scale_to_mm(obj, jewelry_type, us_ring_size=None, height_mm=None):
     # Determine target dimension
     jtype = jewelry_type.lower() if jewelry_type else "other"
     defaults = DEFAULT_DIMENSIONS.get(jtype, DEFAULT_DIMENSIONS["other"])
+
+    # NEW: weight-driven scaling — only for non-rings, uniform scale to hit weight
+    weight_mode = (target_weight_grams is not None
+                   and current_weight_grams is not None
+                   and current_weight_grams > 0
+                   and jtype != "ring")
+    if weight_mode:
+        scale_factor = (float(target_weight_grams) / float(current_weight_grams)) ** (1.0 / 3.0)
+        print(f"JewelForge: Weight-mode — current {current_weight_grams:.4f}g ({metal_type}), "
+              f"target {target_weight_grams}g, uniform scale ×{scale_factor:.4f}")
+        obj.scale *= scale_factor
+        bpy.context.view_layer.update()
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+        new_dims = obj.dimensions
+        print(f"JewelForge: Scaled dims: {new_dims.x*1000:.2f} x {new_dims.y*1000:.2f} x {new_dims.z*1000:.2f} mm")
+        # Return the resulting longest dim as target_mm for stats compatibility
+        return max(new_dims.x, new_dims.y, new_dims.z) * 1000
 
     if jtype == "ring" and us_ring_size is not None:
         target_mm = US_RING_SIZES.get(float(us_ring_size), 17.35)
@@ -311,9 +336,12 @@ def main():
     jewelry_type = params.get("jewelry_type", "ring")
     us_ring_size = params.get("us_ring_size")
     height_mm = params.get("height_mm")
+    target_weight_grams = params.get("target_weight_grams")
+    metal_type = params.get("metal_type", "gold_14k")
 
     print(f"JewelForge: Processing {input_path}")
-    print(f"JewelForge: Params — type={jewelry_type}, ring_size={us_ring_size}, height_mm={height_mm}")
+    print(f"JewelForge: Params — type={jewelry_type}, ring_size={us_ring_size}, "
+          f"height_mm={height_mm}, target_weight_grams={target_weight_grams}, metal={metal_type}")
 
     # Clear and import
     clear_scene()
@@ -346,8 +374,14 @@ def main():
     print(f"JewelForge: Input — {initial_stats['vertices']} verts, {initial_stats['faces']} faces, "
           f"manifold={initial_stats['is_manifold']}, watertight={initial_stats['is_watertight']}")
 
-    # Step 1: Scale to real-world mm
-    target_mm = scale_to_mm(obj, jewelry_type, us_ring_size, height_mm)
+    # Step 1: Scale to real-world mm (size-driven OR weight-driven)
+    current_weight_grams = initial_stats.get("estimated_weight_grams", {}).get(metal_type)
+    target_mm = scale_to_mm(
+        obj, jewelry_type, us_ring_size, height_mm,
+        target_weight_grams=target_weight_grams,
+        metal_type=metal_type,
+        current_weight_grams=current_weight_grams,
+    )
 
     # Step 2: Light cleanup
     light_cleanup(obj)
@@ -403,6 +437,10 @@ def main():
         "jewelry_type": jewelry_type,
         "target_mm": target_mm,
         "us_ring_size": us_ring_size,
+        "height_mm_requested": height_mm,
+        "target_weight_grams_requested": target_weight_grams,
+        "metal_type": metal_type,
+        "scale_mode": "weight" if target_weight_grams is not None and jewelry_type != "ring" else "size",
     }
     print(f"JEWELFORGE_STATS:{json.dumps(stats)}")
     print("JewelForge: Done!")

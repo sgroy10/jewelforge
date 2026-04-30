@@ -526,8 +526,12 @@ def run_blender_scale_and_repair(
     jewelry_type: str = "ring",
     us_ring_size: float = None,
     height_mm: float = None,
+    target_weight_grams: float = None,
+    metal_type: str = "gold_14k",
 ) -> dict:
-    """Run Blender headless with proper mm scaling + repair."""
+    """Run Blender headless with proper mm scaling + repair.
+    NEW 2026-04-30: target_weight_grams + metal_type drive weight-mode scaling
+    for figurine/pendant/earring (uniform scale to hit weight target)."""
     if not BLENDER_AVAILABLE:
         raise Exception("Blender not available")
 
@@ -535,6 +539,8 @@ def run_blender_scale_and_repair(
         "jewelry_type": jewelry_type,
         "us_ring_size": us_ring_size,
         "height_mm": height_mm,
+        "target_weight_grams": target_weight_grams,
+        "metal_type": metal_type,
     }
     params_json = json.dumps(params)
 
@@ -650,50 +656,18 @@ async def smart_refine(
             wall_thickness_mm=wall_thickness_mm,
         )
 
-        # Post-Blender manifold repair via PyMeshFix (low-level C API, no pyvista)
-        repaired_stl = str(TEMP_DIR / f"{job_id}_repaired.stl")
-        repaired_glb = str(TEMP_DIR / f"{job_id}_repaired.glb")
-        try:
-            from pymeshfix._meshfix import PyTMesh
-            import trimesh as _trimesh
-            import numpy as _np
-
-            if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
-                mesh = _trimesh.load(output_stl)
-                verts = _np.array(mesh.vertices, dtype=_np.float64)
-                faces = _np.array(mesh.faces, dtype=_np.int32)
-                print(f"SmartRefine: PyMeshFix input — {len(verts)} verts, {len(faces)} faces")
-
-                tin = PyTMesh()
-                tin.load_array(verts, faces)
-                tin.fill_small_boundaries(nbe=0, refine=True)
-                tin.clean(max_iters=10, inner_loops=3)
-                vclean, fclean = tin.return_arrays()
-
-                repaired_mesh = _trimesh.Trimesh(
-                    vertices=vclean, faces=fclean, process=False)
-
-                repaired_mesh.export(repaired_stl)
-                repaired_mesh.export(repaired_glb)
-
-                stats["pymeshfix_applied"] = True
-                stats["pymeshfix_verts"] = len(vclean)
-                stats["pymeshfix_faces"] = len(fclean)
-                stats["pymeshfix_watertight"] = bool(repaired_mesh.is_watertight)
-                if repaired_mesh.is_watertight:
-                    stats["pymeshfix_volume_mm3"] = round(float(abs(repaired_mesh.volume)), 4)
-                print(f"SmartRefine: PyMeshFix output — {len(vclean)} verts, "
-                      f"{len(fclean)} faces, watertight={repaired_mesh.is_watertight}")
-
-                output_stl = repaired_stl
-                output_glb = repaired_glb
-        except ImportError as ie:
-            print(f"SmartRefine: PyMeshFix import failed: {ie}")
-            stats["pymeshfix_applied"] = False
-        except Exception as e:
-            print(f"SmartRefine: PyMeshFix failed: {e}")
-            stats["pymeshfix_applied"] = False
-            stats["pymeshfix_error"] = str(e)
+        # PyMeshFix manifold repair DISABLED 2026-04-30.
+        # Audit 2026-04-29 confirmed PyMeshFix.clean() strips disconnected mesh
+        # components, destroying complex Tripo designs (Solitaire stone-setting
+        # heads removed, Skull motif retained 32%, Art Deco pyramid retained 13%
+        # of input volume). The Blender shelling step above already produces
+        # the size + target weight correctly. Output stays non-watertight, same
+        # as /api/scale-and-repair — jeweler does Rhino cleanup downstream
+        # (industry-standard workflow).
+        # To re-enable, restore the block from git tag v1.3-pre-weight-patch.
+        stats["pymeshfix_applied"] = False
+        stats["pymeshfix_disabled_reason"] = "audit-confirmed destructive on multi-component Tripo meshes"
+        print("SmartRefine: PyMeshFix step skipped (disabled — preserves design geometry)")
 
         result = {"success": True, "stats": stats}
         if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
@@ -989,11 +963,15 @@ async def scale_and_repair(
     jewelry_type: str = Form("ring"),
     us_ring_size: float = Form(None),
     height_mm: float = Form(None),
+    target_weight_grams: float = Form(None),
+    metal_type: str = Form("gold_14k"),
 ):
     """Scale a GLB mesh to real-world mm dimensions + repair + export STL.
 
     For rings: pass jewelry_type=ring and us_ring_size (3-13).
-    For other types: pass jewelry_type and optionally height_mm.
+    For figurines/pendants/earrings: pass jewelry_type and EITHER
+        height_mm (size-driven) OR target_weight_grams + metal_type (weight-driven,
+        uniform scale to hit weight in chosen metal). New 2026-04-30.
     Accepts glb_url (from Hitem3D/Rodin) or glb_base64.
     """
     job_id = str(uuid.uuid4())[:8]
@@ -1021,6 +999,8 @@ async def scale_and_repair(
             jewelry_type=jewelry_type,
             us_ring_size=us_ring_size,
             height_mm=height_mm,
+            target_weight_grams=target_weight_grams,
+            metal_type=metal_type,
         )
 
         # Save outputs as files and return URLs (same pattern as /api/refine)

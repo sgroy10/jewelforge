@@ -26,7 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Blender 3.6 LTS (better compatibility)
-RUN wget -q https://mirror.clarkson.edu/blender/release/Blender3.6/blender-3.6.5-linux-x64.tar.xz \
+# Switched to official Blender mirror 2026-04-30 — mirror.clarkson.edu was returning SSL errors (wget exit 5)
+RUN wget -q https://download.blender.org/release/Blender3.6/blender-3.6.5-linux-x64.tar.xz \
     && tar -xf blender-3.6.5-linux-x64.tar.xz -C /opt/ \
     && rm blender-3.6.5-linux-x64.tar.xz \
     && ln -s /opt/blender-3.6.5-linux-x64/blender /usr/local/bin/blender
