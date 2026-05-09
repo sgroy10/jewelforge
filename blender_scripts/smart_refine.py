@@ -378,9 +378,10 @@ def shell_to_target_weight(obj, target_g, metal_type, ring_target_mm=None,
 
 def export_stl(filepath):
     # Blender 4.x renamed the operator and changed kwargs. Production runs
-    # Blender 3.6.5 (legacy operator works) but local testing on 4.x needs
-    # the new operator. hasattr check picks the right one at runtime.
-    if hasattr(bpy.ops.wm, "stl_export"):
+    # Blender 3.6.5 (legacy operator works); local testing on 4.x needs the
+    # new operator. NOTE: cannot use hasattr(bpy.ops.wm, "stl_export") — bpy.ops
+    # lazy-loads operators so hasattr always returns True. Use bpy.app.version.
+    if bpy.app.version >= (4, 0, 0):
         bpy.ops.wm.stl_export(
             filepath=filepath,
             export_selected_objects=True,
@@ -521,14 +522,13 @@ def main():
     obj.select_set(True)
     bpy.ops.object.shade_smooth()
     mesh = obj.data
-    # Blender 4.0+ removed use_auto_smooth/auto_smooth_angle from Mesh data
-    # (replaced by bpy.ops.object.shade_auto_smooth + Smooth-by-Angle modifier).
-    # Production runs Blender 3.6.5 on Railway Docker so this works in prod;
-    # the hasattr guard makes it safe in 4.x for local testing.
-    if hasattr(mesh, "use_auto_smooth"):
+    # Blender 4.0+ removed use_auto_smooth/auto_smooth_angle from Mesh data.
+    # hasattr on a real Mesh attribute IS safe (unlike bpy.ops which lazy-loads).
+    # Use bpy.app.version for the operator-call branch.
+    if bpy.app.version < (4, 0, 0):
         mesh.use_auto_smooth = True
         mesh.auto_smooth_angle = math.radians(35)
-    elif hasattr(bpy.ops.object, "shade_auto_smooth"):
+    else:
         try:
             bpy.ops.object.shade_auto_smooth(angle=math.radians(35))
         except Exception:
