@@ -178,11 +178,20 @@ def scale_to_mm(obj, jewelry_type, us_ring_size=None, height_mm=None,
         return max(new_dims.x, new_dims.y, new_dims.z) * 1000
 
     if jtype == "ring" and us_ring_size is not None:
-        target_mm = US_RING_SIZES.get(float(us_ring_size), 17.35)
+        # HOTFIX 2026-05-09: US ring sizes are INNER diameter, but median bbox
+        # dim is the OUTER diameter. Previously we scaled outer to the inner
+        # value, undersizing every ring by ~3 sizes (US 10.5 came out as US 7).
+        # Add 2x assumed band thickness so the resulting INNER ≈ requested size.
+        # Customers with unusually thick (>2mm) or thin (<1mm) shanks will
+        # still be slightly off; proper fix = detect actual hole radius (TODO).
+        ASSUMED_BAND_THICKNESS_MM = 1.5
+        inner_target_mm = US_RING_SIZES.get(float(us_ring_size), 17.35)
+        target_mm = inner_target_mm + 2.0 * ASSUMED_BAND_THICKNESS_MM
         dim_axes = sorted([("x", dims.x), ("y", dims.y), ("z", dims.z)],
                           key=lambda p: p[1])
         target_axis = dim_axes[1][0]  # median dim = ring outer diameter
-        print(f"JewelForge: Ring size US {us_ring_size} → {target_mm}mm, "
+        print(f"JewelForge: Ring size US {us_ring_size} → inner {inner_target_mm}mm + "
+              f"2*{ASSUMED_BAND_THICKNESS_MM}mm shank = outer {target_mm}mm target, "
               f"scaling {target_axis}-axis (median dim)")
     elif height_mm is not None:
         target_mm = float(height_mm)

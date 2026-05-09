@@ -163,7 +163,12 @@ def decimate_if_needed(obj, target_faces=200000):
 
 
 def scale_to_ring_size(obj, us_ring_size):
-    target_mm = US_RING_SIZES.get(float(us_ring_size), 17.35)
+    # HOTFIX 2026-05-09: same bug as scale_and_repair.py — US ring sizes are
+    # INNER diameter, but median bbox dim is OUTER diameter. Add 2x assumed
+    # band thickness so resulting INNER ≈ requested size.
+    ASSUMED_BAND_THICKNESS_MM = 1.5
+    inner_target_mm = US_RING_SIZES.get(float(us_ring_size), 17.35)
+    target_mm = inner_target_mm + 2.0 * ASSUMED_BAND_THICKNESS_MM
     dims = obj.dimensions
     dim_axes = sorted(
         [("x", dims.x), ("y", dims.y), ("z", dims.z)],
@@ -177,7 +182,8 @@ def scale_to_ring_size(obj, us_ring_size):
         return target_mm
     target_m = target_mm / 1000.0
     scale_factor = target_m / current_dim
-    print(f"SmartRefine: Ring US {us_ring_size} → {target_mm}mm, "
+    print(f"SmartRefine: Ring US {us_ring_size} → inner {inner_target_mm}mm + "
+          f"2*{ASSUMED_BAND_THICKNESS_MM}mm shank = outer {target_mm}mm, "
           f"scaling {target_axis}-axis by {scale_factor:.4f}")
     obj.scale *= scale_factor
     bpy.context.view_layer.update()
