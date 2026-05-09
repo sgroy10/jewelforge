@@ -377,12 +377,24 @@ def shell_to_target_weight(obj, target_g, metal_type, ring_target_mm=None,
 
 
 def export_stl(filepath):
-    bpy.ops.export_mesh.stl(
-        filepath=filepath,
-        use_selection=True,
-        global_scale=1000.0,
-        ascii=False,
-    )
+    # Blender 4.x renamed the operator and changed kwargs. Production runs
+    # Blender 3.6.5 (legacy operator works) but local testing on 4.x needs
+    # the new operator. hasattr check picks the right one at runtime.
+    if hasattr(bpy.ops.wm, "stl_export"):
+        bpy.ops.wm.stl_export(
+            filepath=filepath,
+            export_selected_objects=True,
+            global_scale=1000.0,
+            apply_modifiers=True,
+            ascii_format=False,
+        )
+    else:
+        bpy.ops.export_mesh.stl(
+            filepath=filepath,
+            use_selection=True,
+            global_scale=1000.0,
+            ascii=False,
+        )
 
 
 def export_glb(filepath):
@@ -509,8 +521,18 @@ def main():
     obj.select_set(True)
     bpy.ops.object.shade_smooth()
     mesh = obj.data
-    mesh.use_auto_smooth = True
-    mesh.auto_smooth_angle = math.radians(35)
+    # Blender 4.0+ removed use_auto_smooth/auto_smooth_angle from Mesh data
+    # (replaced by bpy.ops.object.shade_auto_smooth + Smooth-by-Angle modifier).
+    # Production runs Blender 3.6.5 on Railway Docker so this works in prod;
+    # the hasattr guard makes it safe in 4.x for local testing.
+    if hasattr(mesh, "use_auto_smooth"):
+        mesh.use_auto_smooth = True
+        mesh.auto_smooth_angle = math.radians(35)
+    elif hasattr(bpy.ops.object, "shade_auto_smooth"):
+        try:
+            bpy.ops.object.shade_auto_smooth(angle=math.radians(35))
+        except Exception:
+            pass
 
     # Final stats
     final_stats = get_mesh_stats(obj)
