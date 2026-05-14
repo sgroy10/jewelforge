@@ -215,12 +215,14 @@ def run_hollow(blender_exe, solid_glb, output_stl, output_glb, target_weight_g, 
 
 
 def render_views(blender_exe, glb_path, out_dir, resolution=512):
-    """Render 3 views (front, side, perspective) of GLB. Returns dict of view->png path."""
+    """Render 3 views (front, side, perspective) of GLB. Returns dict of view->png path.
+    Timeout 300s — Workbench is fast (~5s per view) but giving generous margin
+    in case mesh is huge or Railway is under load."""
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     rc, stdout, stderr, _ = _run_blender(
         blender_exe, SCRIPT_RENDER,
         [str(Path(glb_path).resolve()), str(Path(out_dir).resolve()), str(resolution)],
-        timeout=180,
+        timeout=300,
     )
     paths = {}
     for view in RENDER_VIEWS:

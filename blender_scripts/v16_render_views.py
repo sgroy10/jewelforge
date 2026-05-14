@@ -121,15 +121,27 @@ def make_camera_look_at(cam_obj, target=Vector((0, 0, 0))):
 
 def render_to(filepath, resolution=768):
     scene = bpy.context.scene
-    # BLENDER_EEVEE_NEXT was introduced in Blender 4.2 (replaces BLENDER_EEVEE).
-    # Railway production runs Blender 3.6.5 which only knows BLENDER_EEVEE.
-    # Local dev runs 4.3.2 which has both (EEVEE_NEXT preferred). Without this
-    # version-gate, the render call rejects the enum and writes zero PNGs —
-    # exactly the bug we saw on 2026-05-14 (every ring fell back to solid).
-    if bpy.app.version >= (4, 2, 0):
-        scene.render.engine = 'BLENDER_EEVEE_NEXT'
-    else:
-        scene.render.engine = 'BLENDER_EEVEE'
+    # BLENDER_WORKBENCH: basic OpenGL solid-shading viewport renderer. Designed
+    # for fast preview rendering, available identically across Blender 2.8+.
+    # 10-100x faster than EEVEE on CPU-only environments like Railway.
+    #
+    # We use Workbench (not EEVEE/EEVEE_NEXT) because:
+    # 1. Vision check only needs geometry visible with consistent lighting —
+    #    photoreal shading is irrelevant.
+    # 2. Hollow meshes are ~700k+ verts post-Solidify; EEVEE on CPU takes >30s
+    #    per view on Railway, blowing past Lovable's 150s Supabase edge timeout.
+    # 3. Workbench has no version-name gotchas (string is identical on 3.6 and
+    #    4.x), unlike the EEVEE → EEVEE_NEXT rename in Blender 4.2.
+    scene.render.engine = 'BLENDER_WORKBENCH'
+    # Tweak Workbench to look "matte studio" rather than the default flat color —
+    # we want decoration / motifs to be visually distinguishable for the AI.
+    if hasattr(scene.display, 'shading'):
+        scene.display.shading.light = 'STUDIO'      # 3-point studio lighting
+        scene.display.shading.color_type = 'SINGLE'  # no per-vertex color noise
+        scene.display.shading.single_color = (0.80, 0.80, 0.82)
+        scene.display.shading.show_shadows = True
+        scene.display.shading.show_cavity = True     # enhances surface detail
+        scene.display.shading.cavity_type = 'BOTH'
     scene.render.resolution_x = resolution
     scene.render.resolution_y = resolution
     scene.render.resolution_percentage = 100
@@ -170,15 +182,12 @@ def main():
     add_lights(bbox_radius)
 
     # Single camera, repositioned for each view (no constraints).
-    # Convention: ring's finger axis = X (smallest dim usually).
-    # FRONT = looking down +Y at origin (camera at -Y, sees the ring face-on)
-    # SIDE  = looking down +X at origin (camera at -X)
-    # TOP   = looking down -Z at origin (camera at +Z)
-    # PERSP = 3/4 angle, slight elevation
+    # 3 views only — top view dropped 2026-05-14 because vision check excludes it
+    # (top view of a hollow ring inherently shows the interior cavity, which
+    # vision AI mis-flags as "destruction"). Saves ~25% of render time.
     views = [
         ("view_front",       Vector((0,              -cam_dist,        0))),
         ("view_side",        Vector((-cam_dist,       0,               0))),
-        ("view_top",         Vector((0,               0,               cam_dist))),
         ("view_perspective", Vector(( cam_dist * 0.7, -cam_dist * 0.7, cam_dist * 0.6))),
     ]
 
