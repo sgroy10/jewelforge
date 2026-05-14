@@ -121,7 +121,15 @@ def make_camera_look_at(cam_obj, target=Vector((0, 0, 0))):
 
 def render_to(filepath, resolution=768):
     scene = bpy.context.scene
-    scene.render.engine = 'BLENDER_EEVEE_NEXT'
+    # BLENDER_EEVEE_NEXT was introduced in Blender 4.2 (replaces BLENDER_EEVEE).
+    # Railway production runs Blender 3.6.5 which only knows BLENDER_EEVEE.
+    # Local dev runs 4.3.2 which has both (EEVEE_NEXT preferred). Without this
+    # version-gate, the render call rejects the enum and writes zero PNGs —
+    # exactly the bug we saw on 2026-05-14 (every ring fell back to solid).
+    if bpy.app.version >= (4, 2, 0):
+        scene.render.engine = 'BLENDER_EEVEE_NEXT'
+    else:
+        scene.render.engine = 'BLENDER_EEVEE'
     scene.render.resolution_x = resolution
     scene.render.resolution_y = resolution
     scene.render.resolution_percentage = 100

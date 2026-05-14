@@ -36,3 +36,23 @@ __pycache__/
 .speclock/
 SPECLOCK.md
 NEXT_SESSION.md
+
+# v1.6 dev sandbox — production code is in blender_scripts/v16_*.py
+shell_v2/
+tana_poc/
+
+# Secrets
+.env
+**/.env
+
+# Local rollback docs
+ROLLBACK.md
+
+# Large GLB/STL/OBJ test outputs accidentally in repo root
+*.glb
+*.stl
+*.obj
+*.png
+
+# Blender portable install (if it's somehow here)
+blender-portable/

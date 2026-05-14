@@ -227,6 +227,17 @@ def render_views(blender_exe, glb_path, out_dir, resolution=512):
         p = Path(out_dir) / f"{view}.png"
         if p.exists():
             paths[view] = str(p)
+    # If we didn't get all views, log Blender output so the failure is diagnosable
+    # in Railway logs (previously stderr was silently swallowed — see 2026-05-14
+    # incident where Blender 3.6 rejected BLENDER_EEVEE_NEXT engine).
+    if len(paths) < len(RENDER_VIEWS):
+        print(f"[v16-render] FAIL: rc={rc}, got {len(paths)}/{len(RENDER_VIEWS)} PNGs")
+        if stderr:
+            print(f"[v16-render] stderr (last 800 chars):\n{stderr[-800:]}")
+        # Also surface the relevant Render: lines from stdout
+        for line in stdout.split("\n"):
+            if line.startswith("Render:") or "Error" in line or "error" in line.lower():
+                print(f"[v16-render] stdout: {line}")
     return paths
 
 
