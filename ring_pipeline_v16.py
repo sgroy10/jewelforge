@@ -30,6 +30,7 @@ import base64
 import subprocess
 import urllib.request
 import urllib.error
+import concurrent.futures
 from pathlib import Path
 
 
@@ -421,12 +422,25 @@ def run_ring_pipeline_v16(
             decision_reason = "render_failed"
             do_hollow = False
         else:
+            # Run all 3 angle judgments in parallel via thread pool.
+            # Each call is ~20-30s sequential -> ~25s in parallel (limited by slowest).
+            # Saves ~40-50s vs sequential.
             per_angle = {}
-            for view in RENDER_VIEWS:
-                if view in solid_renders and view in hollow_renders:
-                    per_angle[view] = vision_check_one_angle(
-                        openrouter_api_key,
-                        solid_renders[view], hollow_renders[view], view)
+            angle_jobs = [view for view in RENDER_VIEWS
+                          if view in solid_renders and view in hollow_renders]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(angle_jobs)) as pool:
+                futures = {
+                    pool.submit(vision_check_one_angle, openrouter_api_key,
+                                solid_renders[view], hollow_renders[view], view): view
+                    for view in angle_jobs
+                }
+                for fut in concurrent.futures.as_completed(futures):
+                    view = futures[fut]
+                    try:
+                        per_angle[view] = fut.result()
+                    except Exception as e:
+                        per_angle[view] = {"score": 0, "verdict": "fail",
+                                            "issues": f"thread_error: {str(e)[:200]}"}
                     log(f"  -> {view}: score={per_angle[view]['score']} ({per_angle[view]['verdict']})")
             overall_verdict, agg = aggregate_vision_verdict(per_angle)
             vision_result = {"overall": overall_verdict, "per_angle": per_angle, "aggregate": agg}

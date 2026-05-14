@@ -21,6 +21,27 @@ import httpx
 # v1.6 ring pipeline orchestrator (gated by FEATURE_V16_RING_PIPELINE env var)
 from ring_pipeline_v16 import run_ring_pipeline_v16
 
+# Async submit/poll support (v1.6.1, 2026-05-14)
+import threading
+import time as _time
+# In-memory task store for async submit/poll endpoints.
+# Lost on Railway redeploy; acceptable since jobs run <5 min.
+# Cleanup runs on every poll: expire tasks older than 24 hours.
+_TASK_STORE: dict = {}
+_TASK_STORE_LOCK = threading.Lock()
+_TASK_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+
+
+def _cleanup_old_tasks():
+    """Remove tasks older than TTL. Called opportunistically from poll endpoint."""
+    cutoff = _time.time() - _TASK_TTL_SECONDS
+    with _TASK_STORE_LOCK:
+        stale = [tid for tid, t in _TASK_STORE.items()
+                 if t.get("created_at", 0) < cutoff]
+        for tid in stale:
+            _TASK_STORE.pop(tid, None)
+    return len(stale)
+
 app = FastAPI(title="JewelForge", version="1.0.0")
 
 app.add_middleware(
@@ -758,6 +779,227 @@ async def smart_refine(
             os.remove(input_glb)
         except OSError:
             pass
+
+
+# ──────────────────────────────────────────────
+# Async submit/poll for /api/smart-refine (v1.6.1, 2026-05-14)
+#
+# Why: v1.6 ring pipeline takes ~300s end-to-end. Supabase edge functions
+# (Lovable) have a hard 150s idle timeout. Client connections get killed
+# mid-flight. Solution: submit returns a task_id immediately, work runs
+# in background thread, poll retrieves result when ready.
+#
+# Same payload as /api/smart-refine. Same response shape on completion.
+# Pattern mirrors /api/generate-3d/submit + poll that Lovable already uses.
+# ──────────────────────────────────────────────
+
+def _smart_refine_background(
+    task_id: str,
+    input_glb: str,
+    jewelry_type: str,
+    us_ring_size,
+    target_weight_grams,
+    metal_type: str,
+    wall_thickness_mm,
+    use_v16: bool,
+):
+    """Background worker for async smart-refine. Runs in a daemon thread.
+    Writes status + result into _TASK_STORE."""
+    try:
+        with _TASK_STORE_LOCK:
+            _TASK_STORE[task_id]["status"] = "running"
+            _TASK_STORE[task_id]["started_at"] = _time.time()
+
+        if use_v16:
+            v16 = run_ring_pipeline_v16(
+                input_glb=input_glb,
+                us_ring_size=us_ring_size,
+                target_weight_grams=target_weight_grams,
+                metal_type=metal_type,
+                job_id=task_id,
+                temp_dir=TEMP_DIR,
+                blender_exe=BLENDER_EXE,
+                openrouter_api_key=OPENROUTER_API_KEY,
+            )
+            if not v16.get("success"):
+                raise Exception(f"v16 pipeline failed: {v16.get('error', 'unknown')}")
+            result = {
+                "success": True,
+                "stats": v16["stats"],
+                "hollowed": v16["hollowed"],
+                "delivered_weight_g": v16["delivered_weight_g"],
+                "target_weight_g": v16["target_weight_g"],
+                "ring_size_us": v16["ring_size_us"],
+                "metal_type": v16["metal_type"],
+                "fallback_reason": v16.get("fallback_reason"),
+                "pipeline_version": "1.6",
+            }
+            files = v16.get("files", {})
+            for ext in ["stl", "glb", "obj"]:
+                if files.get(ext) and os.path.exists(files[ext]):
+                    persist = str(TEMP_DIR / f"{task_id}_smart.{ext}")
+                    if os.path.exists(persist):
+                        os.remove(persist)
+                    os.rename(files[ext], persist)
+                    result[f"{ext}_url"] = f"/api/files/{task_id}_smart.{ext}"
+        else:
+            # v1.5.1 path
+            output_stl = str(TEMP_DIR / f"{task_id}_output.stl")
+            output_glb = str(TEMP_DIR / f"{task_id}_output.glb")
+            stats = run_blender_smart_refine(
+                input_glb, output_stl, output_glb,
+                jewelry_type=jewelry_type, us_ring_size=us_ring_size,
+                target_weight_grams=target_weight_grams, metal_type=metal_type,
+                wall_thickness_mm=wall_thickness_mm,
+            )
+            stats["pymeshfix_applied"] = False
+            stats["pymeshfix_disabled_reason"] = "audit-confirmed destructive on multi-component Tripo meshes"
+            result = {"success": True, "stats": stats}
+            if os.path.exists(output_stl) and os.path.getsize(output_stl) > 84:
+                persist = str(TEMP_DIR / f"{task_id}_smart.stl")
+                if os.path.exists(persist):
+                    os.remove(persist)
+                os.rename(output_stl, persist)
+                result["stl_url"] = f"/api/files/{task_id}_smart.stl"
+            if os.path.exists(output_glb) and os.path.getsize(output_glb) > 200:
+                persist = str(TEMP_DIR / f"{task_id}_smart.glb")
+                if os.path.exists(persist):
+                    os.remove(persist)
+                os.rename(output_glb, persist)
+                result["glb_url"] = f"/api/files/{task_id}_smart.glb"
+
+        elapsed = _time.time() - _TASK_STORE[task_id].get("started_at", _time.time())
+        with _TASK_STORE_LOCK:
+            _TASK_STORE[task_id] = {
+                **_TASK_STORE.get(task_id, {}),
+                "status": "completed",
+                "completed_at": _time.time(),
+                "elapsed_seconds": round(elapsed, 2),
+                "result": result,
+            }
+        print(f"SmartRefineAsync[{task_id}]: completed in {elapsed:.1f}s")
+    except Exception as e:
+        elapsed = _time.time() - _TASK_STORE.get(task_id, {}).get("started_at", _time.time())
+        with _TASK_STORE_LOCK:
+            _TASK_STORE[task_id] = {
+                **_TASK_STORE.get(task_id, {}),
+                "status": "failed",
+                "completed_at": _time.time(),
+                "elapsed_seconds": round(elapsed, 2),
+                "error": str(e)[:500],
+            }
+        print(f"SmartRefineAsync[{task_id}]: FAILED after {elapsed:.1f}s: {str(e)[:200]}")
+    finally:
+        try:
+            os.remove(input_glb)
+        except OSError:
+            pass
+
+
+@app.post("/api/smart-refine/submit")
+async def smart_refine_submit(
+    glb_url: str = Form(None),
+    glb_base64: str = Form(None),
+    jewelry_type: str = Form("ring"),
+    us_ring_size: float = Form(None),
+    target_weight_grams: float = Form(None),
+    metal_type: str = Form("gold_14k"),
+    wall_thickness_mm: float = Form(None),
+):
+    """Async version of /api/smart-refine. Returns task_id immediately.
+    Poll /api/smart-refine/poll/{task_id} for results.
+    Same form-urlencoded payload as the synchronous endpoint."""
+    task_id = str(uuid.uuid4())[:12]
+    input_glb = str(TEMP_DIR / f"{task_id}_input.glb")
+
+    # Download/decode GLB synchronously — fail fast if input is bad
+    try:
+        if glb_url:
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.get(glb_url)
+                    resp.raise_for_status()
+                    with open(input_glb, "wb") as f:
+                        f.write(resp.content)
+            except httpx.HTTPStatusError as e:
+                raise HTTPException(status_code=422, detail={
+                    "error": "glb_url_unreachable",
+                    "message": f"Failed to download GLB: upstream {e.response.status_code}",
+                    "url": glb_url,
+                })
+        elif glb_base64:
+            with open(input_glb, "wb") as f:
+                f.write(base64.b64decode(glb_base64))
+        else:
+            raise HTTPException(status_code=400, detail="Provide glb_url or glb_base64")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail={"error": "glb_decode_failed", "message": str(e)[:200]})
+
+    # Register task and spawn background worker
+    use_v16 = bool(FEATURE_V16_RING_PIPELINE and jewelry_type == "ring")
+    with _TASK_STORE_LOCK:
+        _TASK_STORE[task_id] = {
+            "task_id": task_id,
+            "status": "pending",
+            "created_at": _time.time(),
+            "endpoint": "smart-refine",
+            "use_v16": use_v16,
+            "params": {
+                "jewelry_type": jewelry_type,
+                "us_ring_size": us_ring_size,
+                "target_weight_grams": target_weight_grams,
+                "metal_type": metal_type,
+            },
+        }
+    threading.Thread(
+        target=_smart_refine_background,
+        kwargs={
+            "task_id": task_id,
+            "input_glb": input_glb,
+            "jewelry_type": jewelry_type,
+            "us_ring_size": us_ring_size,
+            "target_weight_grams": target_weight_grams,
+            "metal_type": metal_type,
+            "wall_thickness_mm": wall_thickness_mm,
+            "use_v16": use_v16,
+        },
+        daemon=True,
+    ).start()
+
+    print(f"SmartRefineAsync[{task_id}]: submitted (use_v16={use_v16})")
+    return {
+        "task_id": task_id,
+        "status": "submitted",
+        "poll_url": f"/api/smart-refine/poll/{task_id}",
+        "use_v16": use_v16,
+    }
+
+
+@app.get("/api/smart-refine/poll/{task_id}")
+async def smart_refine_poll(task_id: str):
+    """Poll status of an async smart-refine task.
+
+    Returns:
+      {"status": "pending"}        — task created, worker not yet started
+      {"status": "running", ...}   — work in progress
+      {"status": "completed", "result": {...}} — done, result is the full response
+      {"status": "failed", "error": "..."}    — fatal error
+
+    Lovable: poll every 5s like you do for generate-3d. When status==completed,
+    use the URLs in result.stl_url / result.glb_url / result.obj_url.
+    """
+    _cleanup_old_tasks()
+    with _TASK_STORE_LOCK:
+        task = _TASK_STORE.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail={
+            "error": "task_not_found",
+            "task_id": task_id,
+            "message": "Task may have expired (24-hour TTL) or never existed",
+        })
+    return task
 
 
 # ──────────────────────────────────────────────
