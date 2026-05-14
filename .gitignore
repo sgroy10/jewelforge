@@ -3,3 +3,9 @@ test_image_b64.txt
 *.glb
 *.png
 latest_*
+
+# Secrets — never commit
+.env
+**/.env
+*.key
+api_keys.json

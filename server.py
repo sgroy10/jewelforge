@@ -18,6 +18,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
 
+# v1.6 ring pipeline orchestrator (gated by FEATURE_V16_RING_PIPELINE env var)
+from ring_pipeline_v16 import run_ring_pipeline_v16
+
 app = FastAPI(title="JewelForge", version="1.0.0")
 
 app.add_middleware(
@@ -35,6 +38,14 @@ HITEM3D_SECRET_KEY = os.environ.get("HITEM3D_SECRET_KEY", "")
 RODIN_API_KEY = os.environ.get("RODIN_API_KEY", "")
 REMESHY_API_KEY = os.environ.get("REMESHY_API_KEY", "")
 JEWELFORGE_API_KEY = os.environ.get("JEWELFORGE_API_KEY", "")
+
+# v1.6 ring pipeline — new sizing + hollowing + vision check + fallback.
+# Feature-flag gated so production stays on v1.5.1 until explicitly enabled.
+# Branches in ONLY when jewelry_type == "ring" AND flag is "true". All other
+# jewelry types (figurine, pendant) continue using existing v1.5.1 code path.
+FEATURE_V16_RING_PIPELINE = os.environ.get("FEATURE_V16_RING_PIPELINE", "false").lower() == "true"
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+BLENDER_EXE = os.environ.get("BLENDER_EXE", "blender")  # path or just "blender" on PATH
 
 TEMP_DIR = Path(tempfile.gettempdir()) / "jewelforge"
 TEMP_DIR.mkdir(exist_ok=True)
@@ -623,7 +634,13 @@ async def smart_refine(
     wall_thickness_mm: float = Form(None),
 ):
     """Shell-based jewelry refine. Hollows the mesh to hit target weight
-    without distorting proportions. Separate from /api/scale-and-repair."""
+    without distorting proportions. Separate from /api/scale-and-repair.
+
+    v1.6 (2026-05-14): when jewelry_type=="ring" AND FEATURE_V16_RING_PIPELINE
+    env var is "true", routes to the new ring pipeline (Rhino-matched sizing
+    + voxel-remesh hollow + Gemini vision gate + sized-solid fallback). All
+    other jewelry types continue using the existing v1.5.1 code path below.
+    """
     job_id = str(uuid.uuid4())[:8]
     input_glb = str(TEMP_DIR / f"{job_id}_input.glb")
     output_stl = str(TEMP_DIR / f"{job_id}_output.stl")
@@ -648,6 +665,58 @@ async def smart_refine(
                 f.write(base64.b64decode(glb_base64))
         else:
             raise HTTPException(status_code=400, detail="Provide glb_url or glb_base64")
+
+        # ─── v1.6 BRANCH: ring orders only, feature-flag gated ───
+        if FEATURE_V16_RING_PIPELINE and jewelry_type == "ring":
+            print(f"SmartRefine[{job_id}]: routing to v1.6 ring pipeline")
+            v16 = run_ring_pipeline_v16(
+                input_glb=input_glb,
+                us_ring_size=us_ring_size,
+                target_weight_grams=target_weight_grams,
+                metal_type=metal_type,
+                job_id=job_id,
+                temp_dir=TEMP_DIR,
+                blender_exe=BLENDER_EXE,
+                openrouter_api_key=OPENROUTER_API_KEY,
+            )
+            if not v16.get("success"):
+                raise HTTPException(status_code=500, detail={
+                    "error": "v16_pipeline_failed",
+                    "detail": v16.get("error", "unknown"),
+                })
+            result = {
+                "success": True,
+                "stats": v16["stats"],
+                "hollowed": v16["hollowed"],
+                "delivered_weight_g": v16["delivered_weight_g"],
+                "target_weight_g": v16["target_weight_g"],
+                "ring_size_us": v16["ring_size_us"],
+                "metal_type": v16["metal_type"],
+                "fallback_reason": v16.get("fallback_reason"),
+                "pipeline_version": "1.6",
+            }
+            # Rename output files to the standard {job_id}_smart.* pattern
+            files = v16.get("files", {})
+            if files.get("stl") and os.path.exists(files["stl"]):
+                persist = str(TEMP_DIR / f"{job_id}_smart.stl")
+                if os.path.exists(persist):
+                    os.remove(persist)
+                os.rename(files["stl"], persist)
+                result["stl_url"] = f"/api/files/{job_id}_smart.stl"
+            if files.get("glb") and os.path.exists(files["glb"]):
+                persist = str(TEMP_DIR / f"{job_id}_smart.glb")
+                if os.path.exists(persist):
+                    os.remove(persist)
+                os.rename(files["glb"], persist)
+                result["glb_url"] = f"/api/files/{job_id}_smart.glb"
+            if files.get("obj") and os.path.exists(files["obj"]):
+                persist = str(TEMP_DIR / f"{job_id}_smart.obj")
+                if os.path.exists(persist):
+                    os.remove(persist)
+                os.rename(files["obj"], persist)
+                result["obj_url"] = f"/api/files/{job_id}_smart.obj"
+            return result
+        # ─── end v1.6 branch — fall through to existing v1.5.1 code below ───
 
         stats = run_blender_smart_refine(
             input_glb, output_stl, output_glb,
@@ -992,6 +1061,59 @@ async def scale_and_repair(
                 f.write(base64.b64decode(glb_base64))
         else:
             raise HTTPException(status_code=400, detail="Provide glb_url or glb_base64")
+
+        # ─── v1.6 BRANCH: ring orders only, feature-flag gated ───
+        # Pendants and figurines (and anything else) fall through to existing v1.5.1 code.
+        if FEATURE_V16_RING_PIPELINE and jewelry_type == "ring":
+            print(f"ScaleRepair[{job_id}]: routing to v1.6 ring pipeline")
+            v16 = run_ring_pipeline_v16(
+                input_glb=input_glb,
+                us_ring_size=us_ring_size,
+                target_weight_grams=target_weight_grams,
+                metal_type=metal_type,
+                job_id=job_id,
+                temp_dir=TEMP_DIR,
+                blender_exe=BLENDER_EXE,
+                openrouter_api_key=OPENROUTER_API_KEY,
+            )
+            if not v16.get("success"):
+                raise HTTPException(status_code=500, detail={
+                    "error": "v16_pipeline_failed",
+                    "detail": v16.get("error", "unknown"),
+                })
+            result = {
+                "success": True,
+                "refined": True,
+                "stats": v16["stats"],
+                "hollowed": v16["hollowed"],
+                "delivered_weight_g": v16["delivered_weight_g"],
+                "target_weight_g": v16["target_weight_g"],
+                "ring_size_us": v16["ring_size_us"],
+                "metal_type": v16["metal_type"],
+                "fallback_reason": v16.get("fallback_reason"),
+                "pipeline_version": "1.6",
+            }
+            files = v16.get("files", {})
+            if files.get("stl") and os.path.exists(files["stl"]):
+                persist = str(TEMP_DIR / f"{job_id}_final.stl")
+                if os.path.exists(persist):
+                    os.remove(persist)
+                os.rename(files["stl"], persist)
+                result["stl_url"] = f"/api/files/{job_id}_final.stl"
+            if files.get("glb") and os.path.exists(files["glb"]):
+                persist = str(TEMP_DIR / f"{job_id}_final.glb")
+                if os.path.exists(persist):
+                    os.remove(persist)
+                os.rename(files["glb"], persist)
+                result["glb_url"] = f"/api/files/{job_id}_final.glb"
+            if files.get("obj") and os.path.exists(files["obj"]):
+                persist = str(TEMP_DIR / f"{job_id}_final.obj")
+                if os.path.exists(persist):
+                    os.remove(persist)
+                os.rename(files["obj"], persist)
+                result["obj_url"] = f"/api/files/{job_id}_final.obj"
+            return result
+        # ─── end v1.6 branch — fall through to existing v1.5.1 code below ───
 
         # Run Blender with scaling
         stats = run_blender_scale_and_repair(
