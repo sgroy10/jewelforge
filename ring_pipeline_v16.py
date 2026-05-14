@@ -88,6 +88,7 @@ SCRIPT_HOLLOW = BLENDER_SCRIPTS / "v16_blender_hollow.py"
 SCRIPT_RENDER = BLENDER_SCRIPTS / "v16_render_views.py"
 SCRIPT_GLB_TO_OBJ = BLENDER_SCRIPTS / "v16_glb_to_obj.py"
 SCRIPT_MEASURE = BLENDER_SCRIPTS / "v16_measure_volume.py"
+SCRIPT_FINALIZE = BLENDER_SCRIPTS / "v16_finalize_outputs.py"
 
 
 # ──────────────────────────────────────────────
@@ -326,6 +327,23 @@ def convert_glb_to_obj(blender_exe, in_glb, out_obj):
     return rc == 0 and os.path.exists(out_obj)
 
 
+def finalize_outputs(blender_exe, in_glb, out_stl, out_obj):
+    """Generate BOTH STL and OBJ from a GLB in a single Blender invocation.
+
+    Used in the sized-solid fallback path so customer always receives all 3
+    file formats (GLB + STL + OBJ), matching what the hollow path produces.
+    Returns dict {stl: bool, obj: bool} indicating which exports succeeded.
+    """
+    rc, stdout, stderr, _ = _run_blender(
+        blender_exe, SCRIPT_FINALIZE,
+        [in_glb, out_stl, out_obj], timeout=180,
+    )
+    return {
+        "stl": rc == 0 and os.path.exists(out_stl),
+        "obj": rc == 0 and os.path.exists(out_obj),
+    }
+
+
 # ──────────────────────────────────────────────
 # Main orchestrator — called from server.py
 # ──────────────────────────────────────────────
@@ -453,28 +471,33 @@ def run_ring_pipeline_v16(
 
     # ─── STEP 6: Decide which file to ship ───
     if do_hollow and os.path.exists(hollow_glb):
-        # Ship the hollow
+        # Hollow path: hollow script already produced GLB + STL. Just rename.
         log(f"step 6: shipping HOLLOW file")
-        os.replace(hollow_stl, final_stl) if os.path.exists(hollow_stl) else None
+        if os.path.exists(hollow_stl):
+            os.replace(hollow_stl, final_stl)
         os.replace(hollow_glb, final_glb)
         delivered_weight = (hollow_meta or {}).get("output_weight_g", target_weight_grams)
         hollowed_flag = True
+        # Generate OBJ from final GLB (separate step — hollow script doesn't export OBJ directly anymore)
+        log(f"step 7: converting hollow GLB -> OBJ")
+        obj_ok = convert_glb_to_obj(blender_exe, final_glb, final_obj)
+        stl_ok = os.path.exists(final_stl)
     else:
-        # Ship the sized solid
+        # Fallback path: ship sized solid. Sized-solid GLB exists but we need
+        # to generate STL + OBJ from it so the API response is consistent with
+        # the hollow path (all 3 formats present).
         log(f"step 6: shipping SIZED SOLID (fallback)")
-        # Need STL of sized solid (we don't have one — generate via hollow's existing GLB export trick? No, simpler: use GLB and skip STL for solid case)
-        # For consistency with existing API, we'll generate STL by converting GLB
-        # For now, just rename GLB
         os.replace(sized_solid_glb, final_glb)
         delivered_weight = solid_weight
         hollowed_flag = False
-        # STL skip — caller can generate from GLB if needed. We always ship OBJ which is the recommended format.
-
-    # ─── STEP 7: Convert to OBJ ───
-    log(f"step 7: converting final GLB -> OBJ")
-    obj_ok = convert_glb_to_obj(blender_exe, final_glb, final_obj)
-    if not obj_ok:
-        log(f"  -> OBJ conversion failed, customer gets GLB only")
+        log(f"step 7: finalizing STL + OBJ from sized-solid GLB")
+        finalize = finalize_outputs(blender_exe, final_glb, final_stl, final_obj)
+        stl_ok = finalize["stl"]
+        obj_ok = finalize["obj"]
+        if not stl_ok:
+            log(f"  -> STL generation failed")
+        if not obj_ok:
+            log(f"  -> OBJ generation failed")
 
     # ─── STEP 8: Cleanup intermediate files ───
     for p in [hollow_stl, hollow_glb, sized_solid_glb]:
@@ -510,8 +533,8 @@ def run_ring_pipeline_v16(
             "pipeline_version": "1.6",
         },
         "files": {
-            "obj": final_obj if obj_ok else None,
+            "obj": final_obj if (obj_ok and os.path.exists(final_obj)) else None,
             "glb": final_glb if os.path.exists(final_glb) else None,
-            "stl": final_stl if os.path.exists(final_stl) else None,
+            "stl": final_stl if (stl_ok and os.path.exists(final_stl)) else None,
         },
     }
